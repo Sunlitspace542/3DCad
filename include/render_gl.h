@@ -13,7 +13,7 @@ typedef struct RG_Texture {
 
 void rg_begin_frame(int win_w, int win_h, RG_Color clear);
 void rg_set_viewport_tl(int x, int y, int w, int h, int win_h);
-void rg_reset_viewport(int win_w, int win_h);
+void rg_reset_viewport(int win_w, int win_h, int fb_w, int fb_h);
 
 void rg_fill_rect(int x, int y, int w, int h, RG_Color c);
 void rg_stroke_rect(int x, int y, int w, int h, RG_Color c);

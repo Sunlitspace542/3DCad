@@ -129,3 +129,4 @@ int CadCore_GetActivePointCount(CadCore* core);
 int CadCore_GetActivePolygonCount(CadCore* core);
 int CadCore_GetActiveObjectCount(CadCore* core);
 
+

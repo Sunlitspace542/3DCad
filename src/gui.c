@@ -7,7 +7,17 @@
 #include "file_dialog.h"
 #include "cad_view.h"
 
-#include <SDL_opengl.h>
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
+#include <GL/gl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -509,8 +519,8 @@ void gui_load_tool_icons(GuiState* g, const char* resource_path) {
     }
 }
 
-static void draw_window_chrome(GuiState* g, GuiWin* w, int win_h) {
-    (void)win_h;
+static void draw_window_chrome(GuiState* g, GuiWin* w, int win_h, float scale_x, float scale_y) {
+    (void)win_h; (void)scale_x; (void)scale_y; /* Scale handled by projection matrix */
     Rect r = w->r;
     RG_Color border = { 0,0,0,255 };
     RG_Color face = { 230,230,230,255 };
@@ -759,8 +769,7 @@ void gui_update(GuiState* g, const GuiInput* in, int win_w, int win_h) {
 static void gui_draw_gui_elements(GuiState* g, int win_w, int win_h) {
     if (!g) return;
     
-    /* Ensure we're in 2D GUI rendering mode */
-    rg_reset_viewport(win_w, win_h);
+    /* Viewport and projection already set in gui_draw */
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_CULL_FACE);
 
@@ -776,9 +785,9 @@ static void gui_draw_gui_elements(GuiState* g, int win_w, int win_h) {
     }
 
     /* Windows chrome */
-    draw_window_chrome(g, &g->toolPalette, win_h);
-    for (int i = 0; i < 4; i++) draw_window_chrome(g, &g->view[i], win_h);
-    draw_window_chrome(g, &g->coordBox, win_h);
+    draw_window_chrome(g, &g->toolPalette, win_h, 1.0f, 1.0f);
+    for (int i = 0; i < 4; i++) draw_window_chrome(g, &g->view[i], win_h, 1.0f, 1.0f);
+    draw_window_chrome(g, &g->coordBox, win_h, 1.0f, 1.0f);
 
     /* Tool palette contents - draw tool icons in 2 columns */
     Rect tp = g->toolPalette.r;
@@ -852,8 +861,7 @@ static void gui_draw_gui_elements(GuiState* g, int win_w, int win_h) {
 static void gui_draw_dropdown(GuiState* g, int win_w, int win_h) {
     if (!g) return;
     
-    /* Ensure we're in 2D GUI rendering mode */
-    rg_reset_viewport(win_w, win_h);
+    /* Viewport and projection already set in gui_draw */
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_CULL_FACE);
     
@@ -917,13 +925,23 @@ static void gui_draw_dropdown(GuiState* g, int win_w, int win_h) {
    CAD MODEL RENDERING (3D with depth testing)
    ============================================================================ */
 
-static void gui_draw_cad_views(GuiState* g, int win_w, int win_h) {
+static void gui_draw_cad_views(GuiState* g, int win_w, int win_h, int fb_w, int fb_h) {
     if (!g || !g->cad) return;
+    
+    /* Calculate scale factors for coordinate conversion */
+    float scale_x = (fb_w > 0 && win_w > 0) ? (float)fb_w / (float)win_w : 1.0f;
+    float scale_y = (fb_h > 0 && win_h > 0) ? (float)fb_h / (float)win_h : 1.0f;
     
     /* Render CAD data in each view */
     for (int i = 0; i < 4; i++) {
         Rect vr = g->view[i].r;
         Rect content = (Rect){ vr.x + 6, vr.y + 26, vr.w - 12, vr.h - 32 };
+        
+        /* Scale viewport coordinates to framebuffer */
+        int scaled_x = (int)(content.x * scale_x);
+        int scaled_y = (int)(content.y * scale_y);
+        int scaled_w = (int)(content.w * scale_x);
+        int scaled_h = (int)(content.h * scale_y);
         
         /* Enable depth testing for this viewport */
         glEnable(GL_DEPTH_TEST);
@@ -932,18 +950,18 @@ static void gui_draw_cad_views(GuiState* g, int win_w, int win_h) {
         
         /* Clear depth buffer for this viewport only */
         glEnable(GL_SCISSOR_TEST);
-        int gl_y = win_h - (content.y + content.h);
+        int gl_y = fb_h - (scaled_y + scaled_h);
         if (gl_y < 0) gl_y = 0;
-        glScissor(content.x, gl_y, content.w, content.h);
+        glScissor(scaled_x, gl_y, scaled_w, scaled_h);
         glClearDepth(1.0);
         glClear(GL_DEPTH_BUFFER_BIT);
         glDisable(GL_SCISSOR_TEST);
         
-        /* Render CAD model in this viewport */
-        CadView_Render(&g->views[i], g->cad, content.x, content.y, content.w, content.h, win_h);
+        /* Render CAD model in this viewport - use scaled coordinates */
+        CadView_Render(&g->views[i], g->cad, scaled_x, scaled_y, scaled_w, scaled_h, fb_h);
         
-        /* Reset to 2D after CAD rendering */
-        rg_reset_viewport(win_w, win_h);
+        /* Reset to 2D after CAD rendering - restore main viewport/projection */
+        rg_reset_viewport(win_w, win_h, fb_w, fb_h);
         glDisable(GL_DEPTH_TEST);
         glDisable(GL_CULL_FACE);
     }
@@ -953,11 +971,27 @@ static void gui_draw_cad_views(GuiState* g, int win_w, int win_h) {
    MAIN DRAW FUNCTION
    ============================================================================ */
 
-void gui_draw(GuiState* g, int win_w, int win_h) {
+void gui_draw(GuiState* g, int win_w, int win_h, int fb_w, int fb_h) {
     if (!g) return;
 
-    /* Clear background and initialize frame */
-    rg_begin_frame(win_w, win_h, (RG_Color){255,255,255,255});
+    /* Use framebuffer size for viewport (physical pixels) */
+    /* Use window size for projection (logical pixels) */
+    glViewport(0, 0, fb_w, fb_h);
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_CULL_FACE);
+    glDisable(GL_LIGHTING);
+    glDisable(GL_TEXTURE_2D);
+    glDisable(GL_SCISSOR_TEST);
+
+    glMatrixMode(GL_PROJECTION);
+    glLoadIdentity();
+    /* Projection uses window size so coordinates work correctly */
+    glOrtho(0.0, (double)win_w, (double)win_h, 0.0, -1.0, 1.0);
+    glMatrixMode(GL_MODELVIEW);
+    glLoadIdentity();
+
+    glClearColor(1.0f, 1.0f, 1.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
     
     /* Clear depth buffer once per frame before any 3D drawing */
     glClearDepth(1.0);
@@ -967,13 +1001,13 @@ void gui_draw(GuiState* g, int win_w, int win_h) {
     gui_draw_gui_elements(g, win_w, win_h);
     
     /* Step 2: Draw CAD models in viewports (with proper 3D/depth state) */
-    gui_draw_cad_views(g, win_w, win_h);
+    gui_draw_cad_views(g, win_w, win_h, fb_w, fb_h);
     
     /* Step 3: Draw dropdown menu last (on top of everything) */
     gui_draw_dropdown(g, win_w, win_h);
     
     /* Final reset to ensure clean state */
-    rg_reset_viewport(win_w, win_h);
+    rg_reset_viewport(win_w, win_h, fb_w, fb_h);
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_CULL_FACE);
 }

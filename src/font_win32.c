@@ -2,12 +2,9 @@
 
 #include "font_win32.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-#include <SDL.h>
-#include <SDL_opengl.h>
-#include <SDL_syswm.h>
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -19,6 +16,14 @@
 #include <windows.h>
 #include <wingdi.h>
 #endif
+
+#define GLFW_INCLUDE_NONE
+#include <GLFW/glfw3.h>
+#ifdef _WIN32
+#define GLFW_EXPOSE_NATIVE_WIN32
+#include <GLFW/glfw3native.h>
+#endif
+#include <GL/gl.h>
 
 struct FontWin32 {
     GLuint base;
@@ -38,18 +43,25 @@ static int get_widths(HDC hdc, int* out_widths, int fallback) {
 }
 
 static HFONT create_font(HDC hdc, const char* face, int pointSize) {
-    int height = -MulDiv(pointSize, GetDeviceCaps(hdc, LOGPIXELSY), 72);
+    /* pointSize is already adjusted for DPI in font_create_helvetica */
+    int dpi = GetDeviceCaps(hdc, LOGPIXELSY);
+    int height = -MulDiv(pointSize, dpi, 72);
     return CreateFontA(height, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
         ANSI_CHARSET, OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY,
         FF_DONTCARE, face);
 }
 
-FontWin32* font_create_helvetica_12(void* sdl_window) {
+FontWin32* font_create_helvetica_12(void* glfw_window) {
+    return font_create_helvetica(glfw_window, 12);
+}
+
+FontWin32* font_create_helvetica(void* glfw_window, int pointSize) {
 #ifndef _WIN32
-    (void)sdl_window;
+    (void)glfw_window;
+    (void)pointSize;
     return NULL;
 #else
-    SDL_Window* win = (SDL_Window*)sdl_window;
+    GLFWwindow* win = (GLFWwindow*)glfw_window;
     if (!win) return NULL;
 
     /* Ensure context current, then use wglGetCurrentDC */
@@ -58,17 +70,27 @@ FontWin32* font_create_helvetica_12(void* sdl_window) {
     int gotHdcFromWgl = (hdc != NULL);
 
     if (!hdc) {
-        SDL_SysWMinfo wm;
-        SDL_VERSION(&wm.version);
-        if (!SDL_GetWindowWMInfo(win, &wm)) return NULL;
-        hwnd = wm.info.win.window;
+        hwnd = glfwGetWin32Window(win);
         if (!hwnd) return NULL;
         hdc = GetDC(hwnd);
         if (!hdc) return NULL;
     }
 
-    HFONT font = create_font(hdc, "Helvetica", 12);
-    if (!font) font = create_font(hdc, "Arial", 12);
+    /* Get actual DPI from device context - Windows might return scaled DPI */
+    int dpi = GetDeviceCaps(hdc, LOGPIXELSY);
+    int base_dpi = 96;
+    float dpi_ratio = (float)dpi / (float)base_dpi;
+    
+    /* Scale down point size to compensate for Windows DPI scaling */
+    /* If DPI is 192 (200% scaling), we need to pass 6pt to get 12pt visual size */
+    int adjusted_point_size = (int)((float)pointSize / dpi_ratio);
+    if (adjusted_point_size < 1) adjusted_point_size = 1;
+    
+    fprintf(stdout, "Font DPI: %d, ratio: %.2f, requested: %dpt, adjusted: %dpt\n", 
+            dpi, dpi_ratio, pointSize, adjusted_point_size);
+
+    HFONT font = create_font(hdc, "Helvetica", adjusted_point_size);
+    if (!font) font = create_font(hdc, "Arial", adjusted_point_size);
     if (!font) {
         if (!gotHdcFromWgl && hwnd) ReleaseDC(hwnd, hdc);
         return NULL;
@@ -138,5 +160,6 @@ void font_draw(const FontWin32* f, int x, int y, const char* text, uint8_t gray)
     glListBase(f->base - 32);
     glCallLists((GLsizei)strlen(text), GL_UNSIGNED_BYTE, (const GLubyte*)text);
 }
+
 
 

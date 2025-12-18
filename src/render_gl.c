@@ -1,15 +1,48 @@
 #define _CRT_SECURE_NO_WARNINGS
 #include "render_gl.h"
 
-#include <SDL.h>
-#include <SDL_image.h>
-#include <SDL_opengl.h>
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
+#define STB_IMAGE_IMPLEMENTATION
+#include "../include/stb_image.h"
+
+#include <GL/gl.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #ifdef _MSC_VER
 #pragma comment(lib, "opengl32.lib")
-#pragma comment(lib, "SDL2_image.lib")
+#endif
+
+/* OpenGL extension constants not in standard gl.h */
+#ifndef GL_COMBINE
+#define GL_COMBINE                        0x8570
+#define GL_COMBINE_RGB                    0x8571
+#define GL_COMBINE_ALPHA                  0x8572
+#define GL_SOURCE0_RGB                    0x8580
+#define GL_SOURCE1_RGB                    0x8581
+#define GL_SOURCE2_RGB                    0x8582
+#define GL_SOURCE0_ALPHA                  0x8588
+#define GL_SOURCE1_ALPHA                  0x8589
+#define GL_SOURCE2_ALPHA                  0x858A
+#define GL_OPERAND0_RGB                   0x8590
+#define GL_OPERAND1_RGB                   0x8591
+#define GL_OPERAND2_RGB                   0x8592
+#define GL_OPERAND0_ALPHA                 0x8598
+#define GL_OPERAND1_ALPHA                 0x8599
+#define GL_OPERAND2_ALPHA                 0x859A
+#define GL_SUBTRACT                       0x84E7
+#define GL_CONSTANT                       0x8576
+#define GL_SRC_COLOR                      0x0300
 #endif
 
 static void set_color(RG_Color c) {
@@ -23,10 +56,12 @@ void rg_begin_frame(int win_w, int win_h, RG_Color clear) {
     glDisable(GL_TEXTURE_2D);
     glDisable(GL_SCISSOR_TEST);
 
+    /* win_w and win_h should be framebuffer size for viewport */
     glViewport(0, 0, win_w, win_h);
 
     glMatrixMode(GL_PROJECTION);
     glLoadIdentity();
+    /* Use framebuffer size for projection to match viewport */
     glOrtho(0.0, (double)win_w, (double)win_h, 0.0, -1.0, 1.0);
     glMatrixMode(GL_MODELVIEW);
     glLoadIdentity();
@@ -50,11 +85,13 @@ void rg_set_viewport_tl(int x, int y, int w, int h, int win_h) {
     glLoadIdentity();
 }
 
-void rg_reset_viewport(int win_w, int win_h) {
+void rg_reset_viewport(int win_w, int win_h, int fb_w, int fb_h) {
     glDisable(GL_SCISSOR_TEST);
-    glViewport(0, 0, win_w, win_h);
+    /* Use framebuffer size for viewport (physical pixels) */
+    glViewport(0, 0, fb_w, fb_h);
     glMatrixMode(GL_PROJECTION);
     glLoadIdentity();
+    /* Use window size for projection (logical pixels) */
     glOrtho(0.0, (double)win_w, (double)win_h, 0.0, -1.0, 1.0);
     glMatrixMode(GL_MODELVIEW);
     glLoadIdentity();
@@ -101,37 +138,30 @@ void rg_fill_polygon(const int* x_coords, const int* y_coords, int num_points, R
 }
 
 RG_Texture* rg_load_texture(const char* path) {
-    SDL_Surface* surf = IMG_Load(path);
-    if (!surf) {
-        fprintf(stderr, "Failed to load image %s: %s\n", path, IMG_GetError());
-        return NULL;
-    }
-
-    /* Convert to RGBA format */
-    SDL_Surface* rgba = SDL_ConvertSurfaceFormat(surf, SDL_PIXELFORMAT_RGBA32, 0);
-    SDL_FreeSurface(surf);
-    if (!rgba) {
-        fprintf(stderr, "Failed to convert image %s: %s\n", path, SDL_GetError());
+    int w, h, channels;
+    unsigned char* data = stbi_load(path, &w, &h, &channels, 4); /* Force RGBA */
+    if (!data) {
+        fprintf(stderr, "Failed to load image %s: %s\n", path, stbi_failure_reason());
         return NULL;
     }
 
     RG_Texture* tex = (RG_Texture*)calloc(1, sizeof(RG_Texture));
     if (!tex) {
-        SDL_FreeSurface(rgba);
+        stbi_image_free(data);
         return NULL;
     }
 
-    tex->w = rgba->w;
-    tex->h = rgba->h;
+    tex->w = w;
+    tex->h = h;
 
     glGenTextures(1, &tex->gl_id);
     glBindTexture(GL_TEXTURE_2D, tex->gl_id);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, rgba->w, rgba->h, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba->pixels);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
     glBindTexture(GL_TEXTURE_2D, 0);
 
-    SDL_FreeSurface(rgba);
+    stbi_image_free(data);
     return tex;
 }
 

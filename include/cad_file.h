@@ -103,3 +103,4 @@ CadPolygon* CadFile_GetPolygon(CadFileData* data, int16_t index);
 /* Get object by index (returns NULL if invalid) */
 CadObject* CadFile_GetObject(CadFileData* data, int16_t index);
 
+
