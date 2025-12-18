@@ -1,0 +1,882 @@
+#define _CRT_SECURE_NO_WARNINGS
+
+#include "gui.h"
+#include "render_gl.h"
+#include "font_win32.h"
+#include "cad_core.h"
+#include "file_dialog.h"
+#include "cad_view.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+
+#define TOOL_COUNT 24
+
+typedef struct Rect {
+    int x, y, w, h;
+} Rect;
+
+static int pt_in_rect(int px, int py, Rect r) {
+    return px >= r.x && px < r.x + r.w && py >= r.y && py < r.y + r.h;
+}
+
+typedef struct GuiWin {
+    const char* title;
+    Rect r;
+    int draggable;
+} GuiWin;
+
+struct GuiState {
+    FontWin32* font;
+
+    /* CAD core */
+    CadCore* cad;
+    char current_filename[260]; /* Current file path (MAX_PATH) */
+    
+    /* View states */
+    CadView views[4];        /* One view state per view window */
+
+    /* Layout windows (match screenshot-ish geometry) */
+    GuiWin toolPalette;      /* 120x410 left */
+    GuiWin view[4];          /* 4 view windows */
+    GuiWin coordBox;         /* coordinates/info */
+
+    /* Menu bar */
+    const char* menus[5];
+    int menu_count;
+    int menu_open; /* index or -1 */
+    int menu_hover_item; /* 0-based within open menu, -1 none */
+
+    /* Tool icons */
+    RG_Texture* tool_icons[TOOL_COUNT];
+    int selected_tool; /* Currently selected tool index, or -1 if none */
+
+    /* Dragging */
+    GuiWin* drag_win;
+    int drag_off_x;
+    int drag_off_y;
+    
+    /* View interaction */
+    int view_interacting; /* Index of view being interacted with, or -1 */
+    int last_mouse_x;
+    int last_mouse_y;
+};
+
+static int MenuBarHeight(void) { return 20; }
+
+/* -------------------------------------------------------------------------
+   Menu definitions (ported from 3DCad/include/MenuRes.h)
+   ------------------------------------------------------------------------- */
+static const char* fileMenuItems[] = {
+    " File",
+    "(N)New",
+    "(O)Open...",
+    "(S)Save",
+    " Save As...",
+    " Floppy",
+    " Print Out",
+    "-",
+    " Load Color...",
+    " Load Pallet...",
+    " Animation",
+    "-",
+    "(Q)Quit",
+    NULL
+};
+
+static const char* editMenuItems[] = {
+    " Edit",
+    "(U)Undo",
+    " Memory",
+    " Paste",
+    "-",
+    " Copy",
+    NULL
+};
+
+static const char* windowMenuItems[] = {
+    " Windows",
+    " Top",
+    " Front",
+    " Right",
+    " 3D View",
+    "-",
+    "(C)Coordinates",
+    " tool palette",
+    " TenKey",
+    "-",
+    " Clean Up",
+    " Home",
+    NULL
+};
+
+static const char* optionMenuItems[] = {
+    " Options",
+    " Area Select",
+    " Select All",
+    " Change Point",
+    " Flat Check",
+    " F.Support",
+    " F.Information",
+    "-",
+    " Wire Frame",
+    " Solid",
+    NULL
+};
+
+static const char* mergeMenuItems[] = {
+    " Merge",
+    " Grid Merge",
+    " Point Merge",
+    " Polygon Merge ",
+    " All Merge",
+    "-",
+    " Polygon Sort",
+    NULL
+};
+
+static const char* const* menu_items_for_index(int idx) {
+    switch (idx) {
+    case 0: return fileMenuItems;
+    case 1: return editMenuItems;
+    case 2: return windowMenuItems;
+    case 3: return optionMenuItems;
+    case 4: return mergeMenuItems;
+    default: return NULL;
+    }
+}
+
+/* Normalize legacy strings:
+   - "-" is a separator
+   - Leading spaces are padding
+   - "(X)Text" format: keep as-is (shortcut visible)
+   - Old "NNew" format: strip the first letter (backwards compatibility) */
+static const char* menu_display_text(const char* s) {
+    if (!s) return "";
+    if (s[0] == '-' && s[1] == '\0') return "-";
+    while (*s == ' ') s++;
+    /* Keep "(X)Text" format as-is - shortcuts should be visible */
+    /* Handle old "NNew" double-letter format (backwards compatibility) */
+    if (s[0] && s[1] && isupper((unsigned char)s[0]) && s[1] == s[0]) {
+        return s + 1;
+    }
+    return s;
+}
+
+/* -------------------------------------------------------------------------
+   Menu action handlers
+   ------------------------------------------------------------------------- */
+
+static void handle_file_menu_action(GuiState* g, int item_index) {
+    if (!g || !g->cad) return;
+    
+    char filename[260];
+    
+    switch (item_index) {
+    case 1: /* (N)New */
+        /* Check if we need to save first */
+        if (g->cad->isDirty && g->current_filename[0] != '\0') {
+            /* TODO: Ask user if they want to save */
+        }
+        CadCore_Clear(g->cad);
+        g->current_filename[0] = '\0';
+        fprintf(stdout, "New file created\n");
+        break;
+    case 2: /* (O)Open... */
+        if (FileDialog_OpenCAD(filename, sizeof(filename))) {
+            if (CadCore_LoadFile(g->cad, filename)) {
+                strncpy(g->current_filename, filename, sizeof(g->current_filename) - 1);
+                g->current_filename[sizeof(g->current_filename) - 1] = '\0';
+                fprintf(stdout, "Opened file: %s\n", filename);
+            } else {
+                fprintf(stderr, "Error: Failed to open file: %s\n", filename);
+            }
+        }
+        break;
+    case 3: /* (S)Save */
+        if (g->current_filename[0] != '\0') {
+            /* Save to current filename */
+            if (CadCore_SaveFile(g->cad, g->current_filename)) {
+                fprintf(stdout, "Saved file: %s\n", g->current_filename);
+            } else {
+                fprintf(stderr, "Error: Failed to save file: %s\n", g->current_filename);
+            }
+        } else {
+            /* No current filename, use Save As */
+            if (FileDialog_SaveCAD(filename, sizeof(filename))) {
+                if (CadCore_SaveFile(g->cad, filename)) {
+                    strncpy(g->current_filename, filename, sizeof(g->current_filename) - 1);
+                    g->current_filename[sizeof(g->current_filename) - 1] = '\0';
+                    fprintf(stdout, "Saved file: %s\n", filename);
+                } else {
+                    fprintf(stderr, "Error: Failed to save file: %s\n", filename);
+                }
+            }
+        }
+        break;
+    case 4: /* Save As... */
+        if (FileDialog_SaveCAD(filename, sizeof(filename))) {
+            if (CadCore_SaveFile(g->cad, filename)) {
+                strncpy(g->current_filename, filename, sizeof(g->current_filename) - 1);
+                g->current_filename[sizeof(g->current_filename) - 1] = '\0';
+                fprintf(stdout, "Saved file: %s\n", filename);
+            } else {
+                fprintf(stderr, "Error: Failed to save file: %s\n", filename);
+            }
+        }
+        break;
+    case 5: /* Floppy */
+        fprintf(stdout, "Floppy mount (not implemented)\n");
+        break;
+    case 6: /* Print Out */
+        fprintf(stdout, "Print (not implemented)\n");
+        break;
+    case 8: /* Load Color... */
+        fprintf(stdout, "Load Color (not implemented)\n");
+        break;
+    case 9: /* Load Pallet... */
+        fprintf(stdout, "Load Palette (not implemented)\n");
+        break;
+    case 10: /* Animation */
+        fprintf(stdout, "Show Animation (not implemented)\n");
+        break;
+    case 12: /* (Q)Quit */
+        fprintf(stdout, "Quit (application exit not handled here)\n");
+        break;
+    }
+}
+
+static void handle_edit_menu_action(GuiState* g, int item_index) {
+    if (!g || !g->cad) return;
+    
+    switch (item_index) {
+    case 1: /* (U)Undo */
+        fprintf(stdout, "Undo (not implemented yet)\n");
+        break;
+    case 2: /* Memory */
+        fprintf(stdout, "Memory (not implemented yet)\n");
+        break;
+    case 3: /* Paste */
+        fprintf(stdout, "Paste (not implemented yet)\n");
+        break;
+    case 5: /* Copy */
+        fprintf(stdout, "Copy (not implemented yet)\n");
+        break;
+    }
+}
+
+static void handle_window_menu_action(GuiState* g, int item_index) {
+    if (!g) return;
+    
+    switch (item_index) {
+    case 1: /* Top */
+        fprintf(stdout, "Toggle Top view window\n");
+        break;
+    case 2: /* Front */
+        fprintf(stdout, "Toggle Front view window\n");
+        break;
+    case 3: /* Right */
+        fprintf(stdout, "Toggle Right view window\n");
+        break;
+    case 4: /* 3D View */
+        fprintf(stdout, "Toggle 3D View window\n");
+        break;
+    case 6: /* (C)Coordinates */
+        fprintf(stdout, "Toggle Coordinates window\n");
+        break;
+    case 7: /* tool palette */
+        fprintf(stdout, "Toggle Tool Palette window\n");
+        break;
+    case 8: /* TenKey */
+        fprintf(stdout, "Show TenKey window\n");
+        break;
+    case 10: /* Clean Up */
+        /* Reset window positions to home */
+        g->toolPalette.r = (Rect){ 20, 20, 90, 668 };
+        const int baseX = 180, baseY = 20;
+        const int winW = 560, winH = 330;
+        g->view[0].r = (Rect){ baseX + 0,     baseY + 0,     winW, winH };
+        g->view[1].r = (Rect){ baseX + winW,  baseY + 0,     winW, winH };
+        g->view[2].r = (Rect){ baseX + 0,     baseY + winH,  winW, winH };
+        g->view[3].r = (Rect){ baseX + winW,  baseY + winH,  winW, winH };
+        g->coordBox.r = (Rect){ 20, 860, 425, 80 };
+        fprintf(stdout, "Windows cleaned up\n");
+        break;
+    case 11: /* Home */
+        fprintf(stdout, "Home (not implemented yet)\n");
+        break;
+    }
+}
+
+static void handle_option_menu_action(GuiState* g, int item_index) {
+    if (!g || !g->cad) return;
+    
+    switch (item_index) {
+    case 1: /* Area Select */
+        /* Toggle selection mode */
+        g->cad->selectModeFlag = !g->cad->selectModeFlag;
+        if (g->cad->selectModeFlag) {
+            CadCore_SetEditMode(g->cad, CAD_MODE_SELECT_POINT);
+            fprintf(stdout, "Selection mode: Point\n");
+        } else {
+            CadCore_SetEditMode(g->cad, CAD_MODE_SELECT_POLYGON);
+            fprintf(stdout, "Selection mode: Polygon\n");
+        }
+        break;
+    case 2: /* Select All */
+        CadCore_SelectAll(g->cad);
+        fprintf(stdout, "Selected all\n");
+        break;
+    case 3: /* Change Point */
+        fprintf(stdout, "Change Point (not implemented yet)\n");
+        break;
+    case 4: /* Flat Check */
+        fprintf(stdout, "Flat Check (not implemented yet)\n");
+        break;
+    case 5: /* F.Support */
+        fprintf(stdout, "Face Support toggle (not implemented yet)\n");
+        break;
+    case 6: /* F.Information */
+        fprintf(stdout, "Face Information window (not implemented yet)\n");
+        break;
+    case 8: /* Wire Frame */
+        fprintf(stdout, "Wire Frame mode (not implemented yet)\n");
+        break;
+    case 9: /* Solid */
+        fprintf(stdout, "Solid mode (not implemented yet)\n");
+        break;
+    }
+}
+
+static void handle_merge_menu_action(GuiState* g, int item_index) {
+    if (!g || !g->cad) return;
+    
+    switch (item_index) {
+    case 1: /* Merge */
+        fprintf(stdout, "Merge coordinates (not implemented yet)\n");
+        break;
+    case 2: /* Grid Merge */
+        fprintf(stdout, "Grid Merge (not implemented yet)\n");
+        break;
+    case 3: /* Point Merge */
+        fprintf(stdout, "Point Merge (not implemented yet)\n");
+        break;
+    case 4: /* Polygon Merge */
+        fprintf(stdout, "Polygon Merge (not implemented yet)\n");
+        break;
+    case 5: /* All Merge */
+        fprintf(stdout, "All Merge (not implemented yet)\n");
+        break;
+    case 7: /* Polygon Sort */
+        fprintf(stdout, "Polygon Sort (not implemented yet)\n");
+        break;
+    }
+}
+
+static void handle_menu_action(GuiState* g, int menu_index, int item_index) {
+    if (!g) return;
+    
+    switch (menu_index) {
+    case 0: handle_file_menu_action(g, item_index); break;
+    case 1: handle_edit_menu_action(g, item_index); break;
+    case 2: handle_window_menu_action(g, item_index); break;
+    case 3: handle_option_menu_action(g, item_index); break;
+    case 4: handle_merge_menu_action(g, item_index); break;
+    }
+}
+
+GuiState* gui_create(void) {
+    GuiState* g = (GuiState*)calloc(1, sizeof(GuiState));
+    if (!g) return NULL;
+
+    /* Initialize CAD core */
+    g->cad = (CadCore*)calloc(1, sizeof(CadCore));
+    if (g->cad) {
+        CadCore_Init(g->cad);
+    }
+    
+    /* Initialize current filename */
+    g->current_filename[0] = '\0';
+    
+    /* Initialize views - match window titles */
+    CadView_Init(&g->views[0], CAD_VIEW_TOP);    /* "Top" */
+    CadView_Init(&g->views[1], CAD_VIEW_3D);     /* "3D View" */
+    CadView_Init(&g->views[2], CAD_VIEW_FRONT);  /* "Front" */
+    CadView_Init(&g->views[3], CAD_VIEW_RIGHT);  /* "Right" */
+
+    g->menus[0] = "File";
+    g->menus[1] = "Edit";
+    g->menus[2] = "Windows";
+    g->menus[3] = "Options";
+    g->menus[4] = "Merge";
+    g->menu_count = 5;
+    g->menu_open = -1;
+    g->menu_hover_item = -1;
+
+    /* Initialize tool icons to NULL */
+    for (int i = 0; i < TOOL_COUNT; i++) {
+        g->tool_icons[i] = NULL;
+    }
+    g->selected_tool = -1; /* No tool selected initially */
+
+    g->toolPalette.title = "Tool";
+    g->toolPalette.r = (Rect){ 20, 20, 90, 668 };
+    g->toolPalette.draggable = 1;
+
+    /* 4 views (classic 2x2 grid on the right) */
+    const int baseX = 180, baseY = 20;
+    const int winW = 560, winH = 330; /* window outer size */
+    g->view[0] = (GuiWin){ "Top",   { baseX + 0,     baseY + 0,     winW, winH }, 1 };
+    g->view[1] = (GuiWin){ "3D View",{ baseX + winW,  baseY + 0,     winW, winH }, 1 };
+    g->view[2] = (GuiWin){ "Front", { baseX + 0,     baseY + winH,  winW, winH }, 1 };
+    g->view[3] = (GuiWin){ "Right", { baseX + winW,  baseY + winH,  winW, winH }, 1 };
+
+    g->coordBox = (GuiWin){ "COORDINATES", { 20, 860, 425, 80 }, 1 };
+
+    return g;
+}
+
+void gui_destroy(GuiState* g) {
+    if (!g) return;
+    /* Free CAD core */
+    if (g->cad) {
+        CadCore_Destroy(g->cad);
+        free(g->cad);
+    }
+    /* Free tool icons */
+    for (int i = 0; i < TOOL_COUNT; i++) {
+        if (g->tool_icons[i]) {
+            rg_free_texture(g->tool_icons[i]);
+        }
+    }
+    free(g);
+}
+
+void gui_set_font(GuiState* g, FontWin32* font) {
+    if (!g) return;
+    g->font = font;
+}
+
+void gui_load_tool_icons(GuiState* g, const char* resource_path) {
+    if (!g) return;
+    
+    /* Tool icon filenames in order (matching toolIcons array from bitmap.c) */
+    const char* tool_names[TOOL_COUNT] = {
+        "pointselect_bits_32x48.png",
+        "faceselect_bits_32x48.png",
+        "point_bits_32x48.png",
+        "make_bits_32x48.png",
+        "addpoint_bits_32x48.png",
+        "color_bits_32x48.png",
+        "pointmove_bits_32x48.png",
+        "facemove_bits_32x48.png",
+        "pointrotate_bits_32x48.png",
+        "facerotate_bits_32x48.png",
+        "pointscale_bits_32x48.png",
+        "facescale_bits_32x48.png",
+        "delpoint_bits_32x48.png",
+        "delface_bits_32x48.png",
+        "flip_bits_32x48.png",
+        "mirror_bits_32x48.png",
+        "faceflip_bits_32x48.png",
+        "facecopy_bits_32x48.png",
+        "facecut_bits_32x48.png",
+        "faceside_bits_32x48.png",
+        "state_bits_32x48.png",
+        "transfer_bits_32x48.png",
+        "primitive_bits_32x48.png",
+        "UNDO_bits_32x48.png"
+    };
+    
+    char path[512];
+    for (int i = 0; i < TOOL_COUNT; i++) {
+        snprintf(path, sizeof(path), "%s/%s", resource_path, tool_names[i]);
+        g->tool_icons[i] = rg_load_texture(path);
+        if (!g->tool_icons[i]) {
+            fprintf(stderr, "Warning: Failed to load tool icon %d: %s\n", i, tool_names[i]);
+        }
+    }
+}
+
+static void draw_window_chrome(GuiState* g, GuiWin* w, int win_h) {
+    (void)win_h;
+    Rect r = w->r;
+    RG_Color border = { 0,0,0,255 };
+    RG_Color face = { 230,230,230,255 };
+    RG_Color title = { 210,210,210,255 };
+
+    rg_fill_rect(r.x, r.y, r.w, r.h, face);
+    rg_stroke_rect(r.x, r.y, r.w, r.h, border);
+    rg_fill_rect(r.x + 1, r.y + 1, r.w - 2, 18, title);
+    rg_line(r.x + 1, r.y + 19, r.x + r.w - 2, r.y + 19, border);
+
+    if (g->font && w->title) {
+        /* Text drawn in the current projection: we will set viewport to full window before calling */
+        font_draw(g->font, r.x + 6, r.y + 2, w->title, 0);
+    }
+}
+
+static void draw_scrollbars_placeholder(Rect inner) {
+    /* Right + bottom scrollbar tracks */
+    RG_Color sb = { 200,200,200,255 };
+    RG_Color edge = { 120,120,120,255 };
+    rg_fill_rect(inner.x + inner.w - 14, inner.y, 14, inner.h - 14, sb);
+    rg_stroke_rect(inner.x + inner.w - 14, inner.y, 14, inner.h - 14, edge);
+    rg_fill_rect(inner.x, inner.y + inner.h - 14, inner.w - 14, 14, sb);
+    rg_stroke_rect(inner.x, inner.y + inner.h - 14, inner.w - 14, 14, edge);
+}
+
+static void draw_grid(Rect inner) {
+    RG_Color grid = { 220,220,220,255 };
+    RG_Color axis = { 120,120,255,255 };
+    for (int x = inner.x; x < inner.x + inner.w; x += 20) {
+        rg_line(x, inner.y, x, inner.y + inner.h, grid);
+    }
+    for (int y = inner.y; y < inner.y + inner.h; y += 20) {
+        rg_line(inner.x, y, inner.x + inner.w, y, grid);
+    }
+    rg_line(inner.x + inner.w / 2, inner.y, inner.x + inner.w / 2, inner.y + inner.h, axis);
+    rg_line(inner.x, inner.y + inner.h / 2, inner.x + inner.w, inner.y + inner.h / 2, axis);
+}
+
+void gui_update(GuiState* g, const GuiInput* in, int win_w, int win_h) {
+    (void)win_w; (void)win_h;
+    if (!g || !in) return;
+
+    /* Drag windows by title bar */
+    if (in->mouse_pressed) {
+        Rect titlebar;
+        /* Tool palette */
+        titlebar = (Rect){ g->toolPalette.r.x, g->toolPalette.r.y, g->toolPalette.r.w, 20 };
+        if (g->toolPalette.draggable && pt_in_rect(in->mouse_x, in->mouse_y, titlebar)) {
+            g->drag_win = &g->toolPalette;
+        }
+        for (int i = 0; i < 4 && !g->drag_win; i++) {
+            titlebar = (Rect){ g->view[i].r.x, g->view[i].r.y, g->view[i].r.w, 20 };
+            if (g->view[i].draggable && pt_in_rect(in->mouse_x, in->mouse_y, titlebar)) {
+                g->drag_win = &g->view[i];
+            }
+        }
+        titlebar = (Rect){ g->coordBox.r.x, g->coordBox.r.y, g->coordBox.r.w, 20 };
+        if (!g->drag_win && g->coordBox.draggable && pt_in_rect(in->mouse_x, in->mouse_y, titlebar)) {
+            g->drag_win = &g->coordBox;
+        }
+
+        if (g->drag_win) {
+            g->drag_off_x = in->mouse_x - g->drag_win->r.x;
+            g->drag_off_y = in->mouse_y - g->drag_win->r.y;
+        }
+    }
+
+    if (!in->mouse_down) {
+        g->drag_win = NULL;
+        g->view_interacting = -1;
+    } else if (g->drag_win) {
+        g->drag_win->r.x = in->mouse_x - g->drag_off_x;
+        g->drag_win->r.y = in->mouse_y - g->drag_off_y;
+        if (g->drag_win->r.x < 0) g->drag_win->r.x = 0;
+        if (g->drag_win->r.y < MenuBarHeight()) g->drag_win->r.y = MenuBarHeight();
+    } else if (g->view_interacting >= 0) {
+        /* Handle view interaction (rotation for 3D view, pan for others) */
+        int dx = in->mouse_x - g->last_mouse_x;
+        int dy = in->mouse_y - g->last_mouse_y;
+        
+        if (g->views[g->view_interacting].type == CAD_VIEW_3D) {
+            /* Rotate 3D view */
+            CadView_Rotate(&g->views[g->view_interacting], dy * 0.5, dx * 0.5);
+        } else {
+            /* Pan other views */
+            CadView_Pan(&g->views[g->view_interacting], dx, -dy);
+        }
+        
+        g->last_mouse_x = in->mouse_x;
+        g->last_mouse_y = in->mouse_y;
+    }
+    
+    /* Check for view content area clicks (not title bar) */
+    if (in->mouse_pressed && !g->drag_win && g->view_interacting < 0) {
+        for (int i = 0; i < 4; i++) {
+            Rect vr = g->view[i].r;
+            Rect content = (Rect){ vr.x + 6, vr.y + 26, vr.w - 12, vr.h - 32 };
+            Rect titlebar = (Rect){ vr.x, vr.y, vr.w, 20 };
+            
+            /* Check if click is in content area (not title bar) */
+            if (pt_in_rect(in->mouse_x, in->mouse_y, content) && 
+                !pt_in_rect(in->mouse_x, in->mouse_y, titlebar)) {
+                g->view_interacting = i;
+                g->last_mouse_x = in->mouse_x;
+                g->last_mouse_y = in->mouse_y;
+                break;
+            }
+        }
+    }
+
+    /* Tool palette button clicks */
+    if (in->mouse_pressed && !g->drag_win) {
+        Rect tp = g->toolPalette.r;
+        Rect inner = (Rect){ tp.x + 6, tp.y + 26, tp.w - 12, tp.h - 32 };
+        
+        if (pt_in_rect(in->mouse_x, in->mouse_y, inner)) {
+            const int cols = 2;
+            const int icon_w = 32;
+            const int icon_h = 48;
+            const int padding = 2;
+            const int button_w = icon_w + (padding * 2);
+            const int button_h = icon_h + (padding * 2);
+            const int col_gap = 2;
+            const int row_spacing = 1;
+            const int total_cols_w = (button_w * cols) + (col_gap * (cols - 1));
+            const int col_start_x = inner.x + (inner.w - total_cols_w) / 2;
+            
+            /* Check which tool button was clicked */
+            for (int i = 0; i < TOOL_COUNT; i++) {
+                int col = i % cols;
+                int row = i / cols;
+                int x = col_start_x + col * (button_w + col_gap);
+                int y = inner.y + row * (button_h + row_spacing);
+                Rect btn_rect = { x, y, button_w, button_h };
+                
+                if (pt_in_rect(in->mouse_x, in->mouse_y, btn_rect)) {
+                    g->selected_tool = (g->selected_tool == i) ? -1 : i; /* Toggle selection */
+                    break;
+                }
+            }
+        }
+    }
+
+    /* Menu open/close - check menu bar buttons first */
+    int menu_bar_clicked = 0;
+    if (in->mouse_pressed && in->mouse_y < MenuBarHeight()) {
+        int x = 8;
+        for (int i = 0; i < g->menu_count; i++) {
+            int w = g->font ? (font_measure(g->font, g->menus[i]) + 16) : ((int)strlen(g->menus[i]) * 8 + 16);
+            Rect r = { x, 0, w, MenuBarHeight() };
+            if (pt_in_rect(in->mouse_x, in->mouse_y, r)) {
+                g->menu_open = (g->menu_open == i) ? -1 : i;
+                g->menu_hover_item = -1;
+                menu_bar_clicked = 1;
+                break;
+            }
+            x += w;
+        }
+    }
+    
+    /* Dropdown hover + click - only process if menu bar wasn't clicked */
+    if (g->menu_open >= 0 && !menu_bar_clicked) {
+        const char* const* items = menu_items_for_index(g->menu_open);
+        if (items && items[0]) {
+            /* Calculate x position to match menu bar item position exactly */
+            /* Must match the calculation used in menu bar drawing (line 696-697) */
+            int x = 8;
+            for (int i = 0; i < g->menu_open; i++) {
+                if (g->font) {
+                    x += font_measure(g->font, g->menus[i]) + 16;
+                } else {
+                    x += (int)strlen(g->menus[i]) * 8 + 16;
+                }
+            }
+
+            /* Skip first item (header), count remaining items */
+            int maxW = 0;
+            int count = 0;
+            for (const char* const* it = items + 1; *it; it++) {
+                count++;
+                const char* disp = menu_display_text(*it);
+                if (disp[0] == '-' && disp[1] == '\0') continue;
+                int tw = g->font ? font_measure(g->font, disp) : (int)strlen(disp) * 8;
+                if (tw > maxW) maxW = tw;
+            }
+            int dropW = maxW + 24;
+            int itemH = 20;
+            Rect drop = { x, MenuBarHeight(), dropW, count * itemH };
+
+            /* Update hover state */
+            if (pt_in_rect(in->mouse_x, in->mouse_y, drop)) {
+                int idx = (in->mouse_y - drop.y) / itemH;
+                if (idx >= 0 && idx < count) {
+                    /* Map to actual item index (skip header, so +1) */
+                    int actual_idx = idx + 1;
+                    g->menu_hover_item = idx;
+                    
+                    /* Handle click on dropdown item */
+                    if (in->mouse_pressed && items[actual_idx]) {
+                        const char* raw = items[actual_idx];
+                        const char* disp = menu_display_text(raw);
+                        if (!(disp[0] == '-' && disp[1] == '\0')) {
+                            /* Handle menu action */
+                            handle_menu_action(g, g->menu_open, actual_idx);
+                            g->menu_open = -1;
+                            g->menu_hover_item = -1;
+                        }
+                    }
+                } else {
+                    g->menu_hover_item = -1;
+                }
+            } else {
+                g->menu_hover_item = -1;
+                /* Click outside dropdown (but not on menu bar) closes menu */
+                if (in->mouse_pressed) {
+                    g->menu_open = -1;
+                    g->menu_hover_item = -1;
+                }
+            }
+        }
+    }
+}
+
+void gui_draw(GuiState* g, int win_w, int win_h) {
+    if (!g) return;
+
+    /* Background */
+    rg_begin_frame(win_w, win_h, (RG_Color){255,255,255,255});
+
+    /* Menu bar */
+    rg_fill_rect(0, 0, win_w, MenuBarHeight(), (RG_Color){230,230,230,255});
+    rg_line(0, MenuBarHeight(), win_w, MenuBarHeight(), (RG_Color){0,0,0,255});
+    if (g->font) {
+        int x = 8;
+        for (int i = 0; i < g->menu_count; i++) {
+            font_draw(g->font, x, 3, g->menus[i], 0);
+            x += font_measure(g->font, g->menus[i]) + 16;
+        }
+    }
+
+    /* Windows */
+    draw_window_chrome(g, &g->toolPalette, win_h);
+    for (int i = 0; i < 4; i++) draw_window_chrome(g, &g->view[i], win_h);
+    draw_window_chrome(g, &g->coordBox, win_h);
+
+    /* Tool palette contents - draw tool icons in 2 columns */
+    Rect tp = g->toolPalette.r;
+    Rect inner = (Rect){ tp.x + 6, tp.y + 26, tp.w - 12, tp.h - 32 };
+    RG_Color btn = { 245,245,245,255 };
+    RG_Color edge = { 120,120,120,255 };
+    
+    const int cols = 2;
+    const int rows = (TOOL_COUNT + cols - 1) / cols; /* Round up */
+    
+    /* Use original icon size (32x48) - buttons sized to fit icons */
+    const int icon_w = 32;
+    const int icon_h = 48;
+    const int padding = 2; /* Small padding around icon */
+    const int button_w = icon_w + (padding * 2);
+    const int button_h = icon_h + (padding * 2);
+    
+    const int col_gap = 2; /* Gap between columns */
+    const int row_spacing = 1; /* Spacing between rows */
+    
+    /* Center the columns if they don't fill the full width */
+    const int total_cols_w = (button_w * cols) + (col_gap * (cols - 1));
+    const int col_start_x = inner.x + (inner.w - total_cols_w) / 2;
+    
+    for (int i = 0; i < TOOL_COUNT; i++) {
+        int col = i % cols;
+        int row = i / cols;
+        
+        int x = col_start_x + col * (button_w + col_gap);
+        int y = inner.y + row * (button_h + row_spacing);
+        
+        /* Draw button background */
+        rg_fill_rect(x, y, button_w, button_h, btn);
+        rg_stroke_rect(x, y, button_w, button_h, edge);
+        
+        /* Draw icon at original size, centered in button */
+        if (g->tool_icons[i]) {
+            int icon_x = x + padding;
+            int icon_y = y + padding;
+            if (g->selected_tool == i) {
+                /* Selected: draw normally */
+                rg_draw_texture(g->tool_icons[i], icon_x, icon_y, icon_w, icon_h);
+            } else {
+                /* Not selected: draw with inverted colors */
+                rg_draw_texture_inverted(g->tool_icons[i], icon_x, icon_y, icon_w, icon_h);
+            }
+        }
+    }
+
+    /* View contents: grid + scrollbars */
+    for (int i = 0; i < 4; i++) {
+        Rect vr = g->view[i].r;
+        Rect content = (Rect){ vr.x + 6, vr.y + 26, vr.w - 12, vr.h - 32 };
+        /* Render CAD data in view */
+        if (g->cad) {
+            CadView_Render(&g->views[i], g->cad, content.x, content.y, content.w, content.h, win_h);
+        } else {
+            /* No CAD data - draw grid placeholder */
+            draw_grid((Rect){ content.x, content.y, content.w, content.h });
+        }
+        draw_scrollbars_placeholder(content);
+    }
+
+    /* Coordinates box content placeholder */
+    Rect cr = g->coordBox.r;
+    Rect cinner = (Rect){ cr.x + 6, cr.y + 26, cr.w - 12, cr.h - 32 };
+    rg_fill_rect(cinner.x, cinner.y, cinner.w, cinner.h, (RG_Color){250,250,250,255});
+    rg_stroke_rect(cinner.x, cinner.y, cinner.w, cinner.h, (RG_Color){120,120,120,255});
+    if (g->font) {
+        font_draw(g->font, cinner.x + 8, cinner.y + 6, "X=77   Y=???   Z=87", 0);
+    }
+
+    /* Reset viewport to full window for dropdown menu */
+    rg_reset_viewport(win_w, win_h);
+    
+    /* Dropdown menu (minimal placeholder) */
+    if (g->menu_open >= 0 && g->menu_open < g->menu_count) {
+        const char* const* items = menu_items_for_index(g->menu_open);
+        if (items && items[0]) {
+            /* Calculate x position to match menu bar item position exactly */
+            /* Must match the calculation used in menu bar drawing (line 707-708) */
+            int x = 8;
+            for (int i = 0; i < g->menu_open; i++) {
+                if (g->font) {
+                    x += font_measure(g->font, g->menus[i]) + 16;
+                } else {
+                    x += (int)strlen(g->menus[i]) * 8 + 16;
+                }
+            }
+
+            /* Skip first item (header), count remaining items */
+            int maxW = 0;
+            int count = 0;
+            for (const char* const* it = items + 1; *it; it++) {
+                count++;
+                const char* disp = menu_display_text(*it);
+                if (disp[0] == '-' && disp[1] == '\0') continue;
+                int tw = g->font ? font_measure(g->font, disp) : (int)strlen(disp) * 8;
+                if (tw > maxW) maxW = tw;
+            }
+
+            int w = maxW + 24;
+            int y0 = MenuBarHeight();
+            int itemH = 20;
+            int h = count * itemH;
+
+            rg_fill_rect(x, y0, w, h, (RG_Color){245,245,245,255});
+            rg_stroke_rect(x, y0, w, h, (RG_Color){0,0,0,255});
+
+            /* Draw items (skip header at index 0) */
+            for (int i = 0; i < count; i++) {
+                const char* raw = items[i + 1]; /* Skip header */
+                const char* disp = menu_display_text(raw);
+                int rowY = y0 + i * itemH;
+
+                if (disp[0] == '-' && disp[1] == '\0') {
+                    rg_line(x + 6, rowY + itemH / 2, x + w - 6, rowY + itemH / 2, (RG_Color){120,120,120,255});
+                    continue;
+                }
+
+                if (i == g->menu_hover_item) {
+                    rg_fill_rect(x + 1, rowY, w - 2, itemH, (RG_Color){210,210,210,255});
+                }
+
+                if (g->font) {
+                    font_draw(g->font, x + 8, rowY + 3, disp, 0);
+                }
+            }
+        }
+    }
+}
+
+
