@@ -90,6 +90,16 @@ void rg_line(int x1, int y1, int x2, int y2, RG_Color c) {
     glEnd();
 }
 
+void rg_fill_polygon(const int* x_coords, const int* y_coords, int num_points, RG_Color c) {
+    if (!x_coords || !y_coords || num_points < 3) return;
+    set_color(c);
+    glBegin(GL_POLYGON);
+    for (int i = 0; i < num_points; i++) {
+        glVertex2i(x_coords[i], y_coords[i]);
+    }
+    glEnd();
+}
+
 RG_Texture* rg_load_texture(const char* path) {
     SDL_Surface* surf = IMG_Load(path);
     if (!surf) {

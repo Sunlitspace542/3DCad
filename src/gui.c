@@ -343,10 +343,18 @@ static void handle_option_menu_action(GuiState* g, int item_index) {
         fprintf(stdout, "Face Information window (not implemented yet)\n");
         break;
     case 8: /* Wire Frame */
-        fprintf(stdout, "Wire Frame mode (not implemented yet)\n");
+        /* Toggle all views to wireframe mode */
+        for (int i = 0; i < 4; i++) {
+            g->views[i].wireframe = 1;
+        }
+        fprintf(stdout, "Wire Frame mode enabled\n");
         break;
     case 9: /* Solid */
-        fprintf(stdout, "Solid mode (not implemented yet)\n");
+        /* Toggle all views to solid mode */
+        for (int i = 0; i < 4; i++) {
+            g->views[i].wireframe = 0;
+        }
+        fprintf(stdout, "Solid mode enabled\n");
         break;
     }
 }
@@ -917,6 +925,20 @@ static void gui_draw_cad_views(GuiState* g, int win_w, int win_h) {
         Rect vr = g->view[i].r;
         Rect content = (Rect){ vr.x + 6, vr.y + 26, vr.w - 12, vr.h - 32 };
         
+        /* Enable depth testing for this viewport */
+        glEnable(GL_DEPTH_TEST);
+        glDepthFunc(GL_LEQUAL);
+        glDepthMask(GL_TRUE);
+        
+        /* Clear depth buffer for this viewport only */
+        glEnable(GL_SCISSOR_TEST);
+        int gl_y = win_h - (content.y + content.h);
+        if (gl_y < 0) gl_y = 0;
+        glScissor(content.x, gl_y, content.w, content.h);
+        glClearDepth(1.0);
+        glClear(GL_DEPTH_BUFFER_BIT);
+        glDisable(GL_SCISSOR_TEST);
+        
         /* Render CAD model in this viewport */
         CadView_Render(&g->views[i], g->cad, content.x, content.y, content.w, content.h, win_h);
         
@@ -936,6 +958,10 @@ void gui_draw(GuiState* g, int win_w, int win_h) {
 
     /* Clear background and initialize frame */
     rg_begin_frame(win_w, win_h, (RG_Color){255,255,255,255});
+    
+    /* Clear depth buffer once per frame before any 3D drawing */
+    glClearDepth(1.0);
+    glClear(GL_DEPTH_BUFFER_BIT);
 
     /* Step 1: Draw GUI elements (menu bar, tool palette, windows) */
     gui_draw_gui_elements(g, win_w, win_h);

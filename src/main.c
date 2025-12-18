@@ -44,6 +44,7 @@ int main(int argc, char** argv) {
 
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
     SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
+    SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
 
     int w = 1258, h = 983;
     int x = 0, y = 0;
@@ -65,6 +66,14 @@ int main(int argc, char** argv) {
         return 1;
     }
     SDL_GL_SetSwapInterval(1);
+    
+    /* Verify depth buffer was created */
+    int depthBits = 0;
+    glGetIntegerv(GL_DEPTH_BITS, &depthBits);
+    fprintf(stdout, "GL_DEPTH_BITS = %d\n", depthBits);
+    if (depthBits == 0) {
+        fprintf(stderr, "WARNING: No depth buffer! Depth testing will not work.\n");
+    }
 
     /* Init font (Helvetica 12; fallback to Arial) */
     FontWin32* font = font_create_helvetica_12(win);
