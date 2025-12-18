@@ -7,6 +7,7 @@
 #include "file_dialog.h"
 #include "cad_view.h"
 
+#include <SDL_opengl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -743,11 +744,17 @@ void gui_update(GuiState* g, const GuiInput* in, int win_w, int win_h) {
     }
 }
 
-void gui_draw(GuiState* g, int win_w, int win_h) {
-    if (!g) return;
+/* ============================================================================
+   GUI ELEMENTS RENDERING (2D only - menu bar, tool palette, windows, etc.)
+   ============================================================================ */
 
-    /* Background */
-    rg_begin_frame(win_w, win_h, (RG_Color){255,255,255,255});
+static void gui_draw_gui_elements(GuiState* g, int win_w, int win_h) {
+    if (!g) return;
+    
+    /* Ensure we're in 2D GUI rendering mode */
+    rg_reset_viewport(win_w, win_h);
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_CULL_FACE);
 
     /* Menu bar */
     rg_fill_rect(0, 0, win_w, MenuBarHeight(), (RG_Color){230,230,230,255});
@@ -760,7 +767,7 @@ void gui_draw(GuiState* g, int win_w, int win_h) {
         }
     }
 
-    /* Windows */
+    /* Windows chrome */
     draw_window_chrome(g, &g->toolPalette, win_h);
     for (int i = 0; i < 4; i++) draw_window_chrome(g, &g->view[i], win_h);
     draw_window_chrome(g, &g->coordBox, win_h);
@@ -813,17 +820,10 @@ void gui_draw(GuiState* g, int win_w, int win_h) {
         }
     }
 
-    /* View contents: grid + scrollbars */
+    /* Scrollbars (GUI elements, not CAD) */
     for (int i = 0; i < 4; i++) {
         Rect vr = g->view[i].r;
         Rect content = (Rect){ vr.x + 6, vr.y + 26, vr.w - 12, vr.h - 32 };
-        /* Render CAD data in view */
-        if (g->cad) {
-            CadView_Render(&g->views[i], g->cad, content.x, content.y, content.w, content.h, win_h);
-        } else {
-            /* No CAD data - draw grid placeholder */
-            draw_grid((Rect){ content.x, content.y, content.w, content.h });
-        }
         draw_scrollbars_placeholder(content);
     }
 
@@ -835,16 +835,25 @@ void gui_draw(GuiState* g, int win_w, int win_h) {
     if (g->font) {
         font_draw(g->font, cinner.x + 8, cinner.y + 6, "X=77   Y=???   Z=87", 0);
     }
+}
 
-    /* Reset viewport to full window for dropdown menu */
-    rg_reset_viewport(win_w, win_h);
+/* ============================================================================
+   DROPDOWN MENU RENDERING (must be drawn last, on top of everything)
+   ============================================================================ */
+
+static void gui_draw_dropdown(GuiState* g, int win_w, int win_h) {
+    if (!g) return;
     
-    /* Dropdown menu (minimal placeholder) */
+    /* Ensure we're in 2D GUI rendering mode */
+    rg_reset_viewport(win_w, win_h);
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_CULL_FACE);
+    
+    /* Dropdown menu - drawn last so it appears on top */
     if (g->menu_open >= 0 && g->menu_open < g->menu_count) {
         const char* const* items = menu_items_for_index(g->menu_open);
         if (items && items[0]) {
             /* Calculate x position to match menu bar item position exactly */
-            /* Must match the calculation used in menu bar drawing (line 707-708) */
             int x = 8;
             for (int i = 0; i < g->menu_open; i++) {
                 if (g->font) {
@@ -894,6 +903,53 @@ void gui_draw(GuiState* g, int win_w, int win_h) {
             }
         }
     }
+}
+
+/* ============================================================================
+   CAD MODEL RENDERING (3D with depth testing)
+   ============================================================================ */
+
+static void gui_draw_cad_views(GuiState* g, int win_w, int win_h) {
+    if (!g || !g->cad) return;
+    
+    /* Render CAD data in each view */
+    for (int i = 0; i < 4; i++) {
+        Rect vr = g->view[i].r;
+        Rect content = (Rect){ vr.x + 6, vr.y + 26, vr.w - 12, vr.h - 32 };
+        
+        /* Render CAD model in this viewport */
+        CadView_Render(&g->views[i], g->cad, content.x, content.y, content.w, content.h, win_h);
+        
+        /* Reset to 2D after CAD rendering */
+        rg_reset_viewport(win_w, win_h);
+        glDisable(GL_DEPTH_TEST);
+        glDisable(GL_CULL_FACE);
+    }
+}
+
+/* ============================================================================
+   MAIN DRAW FUNCTION
+   ============================================================================ */
+
+void gui_draw(GuiState* g, int win_w, int win_h) {
+    if (!g) return;
+
+    /* Clear background and initialize frame */
+    rg_begin_frame(win_w, win_h, (RG_Color){255,255,255,255});
+
+    /* Step 1: Draw GUI elements (menu bar, tool palette, windows) */
+    gui_draw_gui_elements(g, win_w, win_h);
+    
+    /* Step 2: Draw CAD models in viewports (with proper 3D/depth state) */
+    gui_draw_cad_views(g, win_w, win_h);
+    
+    /* Step 3: Draw dropdown menu last (on top of everything) */
+    gui_draw_dropdown(g, win_w, win_h);
+    
+    /* Final reset to ensure clean state */
+    rg_reset_viewport(win_w, win_h);
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_CULL_FACE);
 }
 
 
