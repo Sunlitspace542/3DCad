@@ -163,7 +163,7 @@ int main(int argc, char** argv) {
 
         /* Use window size for layout, framebuffer size for viewport */
         gui_update(gui, &in, w, h);
-        gui_draw(gui, w, h, fb_w, fb_h);
+        gui_draw(gui, &in, w, h, fb_w, fb_h);
 
         glfwSwapBuffers(win);
     }

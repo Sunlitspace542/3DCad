@@ -1141,13 +1141,49 @@ static void gui_draw_gui_elements(GuiState* g, int win_w, int win_h) {
         draw_scrollbars_placeholder(content);
     }
 
-    /* Coordinates box content placeholder */
+    /* Coordinates box - show selected point coordinates */
     Rect cr = g->coordBox.r;
     Rect cinner = (Rect){ cr.x + 6, cr.y + 26, cr.w - 12, cr.h - 32 };
     rg_fill_rect(cinner.x, cinner.y, cinner.w, cinner.h, (RG_Color){250,250,250,255});
     rg_stroke_rect(cinner.x, cinner.y, cinner.w, cinner.h, (RG_Color){120,120,120,255});
-    if (g->font) {
-        font_draw(g->font, cinner.x + 8, cinner.y + 6, "X=77   Y=???   Z=87", 0);
+    
+    if (g->font && g->cad) {
+        char coord_str[128];
+        if (g->cad->selection.pointCount > 0) {
+            /* Calculate average of selected points */
+            double avg_x = 0.0, avg_y = 0.0, avg_z = 0.0;
+            int valid_count = 0;
+            
+            for (int i = 0; i < g->cad->selection.pointCount; i++) {
+                int16_t point_idx = g->cad->selection.selectedPoints[i];
+                if (point_idx < 0) continue;
+                
+                CadPoint* pt = CadCore_GetPoint(g->cad, point_idx);
+                if (!pt) continue;
+                
+                avg_x += pt->pointx;
+                avg_y += pt->pointy;
+                avg_z += pt->pointz;
+                valid_count++;
+            }
+            
+            if (valid_count > 0) {
+                avg_x /= valid_count;
+                avg_y /= valid_count;
+                avg_z /= valid_count;
+                
+                if (valid_count == 1) {
+                    snprintf(coord_str, sizeof(coord_str), "X=%.2f   Y=%.2f   Z=%.2f", avg_x, avg_y, avg_z);
+                } else {
+                    snprintf(coord_str, sizeof(coord_str), "X=%.2f   Y=%.2f   Z=%.2f  (avg of %d)", avg_x, avg_y, avg_z, valid_count);
+                }
+            } else {
+                snprintf(coord_str, sizeof(coord_str), "No valid points selected");
+            }
+        } else {
+            snprintf(coord_str, sizeof(coord_str), "No points selected");
+        }
+        font_draw(g->font, cinner.x + 8, cinner.y + 6, coord_str, 0);
     }
 }
 
@@ -1222,7 +1258,42 @@ static void gui_draw_dropdown(GuiState* g, int win_w, int win_h) {
    CAD MODEL RENDERING (3D with depth testing)
    ============================================================================ */
 
-static void gui_draw_cad_views(GuiState* g, int win_w, int win_h, int fb_w, int fb_h) {
+static void gui_draw_view_info_bar(GuiState* g, int view_idx, const GuiInput* in, int win_w, int win_h, int fb_w, int fb_h) {
+    if (!g || !g->font || !in || view_idx < 0 || view_idx >= 4) return;
+    
+    Rect vr = g->view[view_idx].r;
+    Rect content = (Rect){ vr.x + 6, vr.y + 26, vr.w - 12, vr.h - 32 };
+    
+    /* Check if mouse is over this view's content area */
+    if (!pt_in_rect(in->mouse_x, in->mouse_y, content)) {
+        return; /* Don't show info if mouse not over view */
+    }
+    
+    /* Calculate mouse position relative to viewport (content area) */
+    int vp_x = in->mouse_x - content.x;
+    int vp_y = in->mouse_y - content.y;
+    
+    /* Unproject mouse coordinates to world coordinates */
+    double world_x, world_y, world_z;
+    CadView_UnprojectPoint(&g->views[view_idx], vp_x, vp_y, content.w, content.h,
+                          &world_x, &world_y, &world_z);
+    
+    /* Draw info bar at bottom of view window (overlapping content area) */
+    int info_bar_y = vr.y + vr.h - 20; /* 20 pixels high, at bottom of window */
+    RG_Color info_bg = { 240, 240, 240, 255 };
+    RG_Color info_border = { 180, 180, 180, 255 };
+    rg_fill_rect(content.x, info_bar_y, content.w, 20, info_bg);
+    rg_stroke_rect(content.x, info_bar_y, content.w, 20, info_border);
+    
+    /* Format coordinate string */
+    char coord_str[128];
+    snprintf(coord_str, sizeof(coord_str), "X:%.2f  Y:%.2f  Z:%.2f", world_x, world_y, world_z);
+    
+    /* Draw coordinate text */
+    font_draw(g->font, content.x + 8, info_bar_y + 4, coord_str, 0);
+}
+
+static void gui_draw_cad_views(GuiState* g, int win_w, int win_h, int fb_w, int fb_h, const GuiInput* in) {
     if (!g || !g->cad) return;
     
     /* Calculate scale factors for coordinate conversion */
@@ -1261,6 +1332,11 @@ static void gui_draw_cad_views(GuiState* g, int win_w, int win_h, int fb_w, int 
         rg_reset_viewport(win_w, win_h, fb_w, fb_h);
         glDisable(GL_DEPTH_TEST);
         glDisable(GL_CULL_FACE);
+        
+        /* Draw info bar for this view */
+        if (in) {
+            gui_draw_view_info_bar(g, i, in, win_w, win_h, fb_w, fb_h);
+        }
     }
 }
 
@@ -1268,7 +1344,7 @@ static void gui_draw_cad_views(GuiState* g, int win_w, int win_h, int fb_w, int 
    MAIN DRAW FUNCTION
    ============================================================================ */
 
-void gui_draw(GuiState* g, int win_w, int win_h, int fb_w, int fb_h) {
+void gui_draw(GuiState* g, const GuiInput* in, int win_w, int win_h, int fb_w, int fb_h) {
     if (!g) return;
 
     /* Use framebuffer size for viewport (physical pixels) */
@@ -1298,7 +1374,7 @@ void gui_draw(GuiState* g, int win_w, int win_h, int fb_w, int fb_h) {
     gui_draw_gui_elements(g, win_w, win_h);
     
     /* Step 2: Draw CAD models in viewports (with proper 3D/depth state) */
-    gui_draw_cad_views(g, win_w, win_h, fb_w, fb_h);
+    gui_draw_cad_views(g, win_w, win_h, fb_w, fb_h, in);
     
     /* Step 3: Draw dropdown menu last (on top of everything) */
     gui_draw_dropdown(g, win_w, win_h);

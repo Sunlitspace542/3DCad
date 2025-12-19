@@ -641,3 +641,58 @@ void CadView_UnprojectDelta(const CadView* view, int screen_dx, int screen_dy,
         }
     }
 }
+
+/* ----------------------------------------------------------------------------
+   Unproject screen point to 3D world coordinates
+   ---------------------------------------------------------------------------- */
+
+void CadView_UnprojectPoint(const CadView* view, int screen_x, int screen_y,
+                            int viewport_w, int viewport_h,
+                            double* out_x, double* out_y, double* out_z) {
+    if (!view || !out_x || !out_y || !out_z) return;
+    
+    /* Convert screen coordinates to viewport space (centered, accounting for zoom and pan) */
+    double vp_x = ((double)screen_x - (double)viewport_w / 2.0) / view->zoom - view->pan_x;
+    double vp_y = -((double)screen_y - (double)viewport_h / 2.0) / view->zoom - view->pan_y; /* Flip Y */
+    
+    /* Convert viewport coordinates to world coordinates based on view type */
+    if (view->type == CAD_VIEW_3D) {
+        /* For 3D view, we project onto the view plane (z=0 in view space) */
+        /* This is a simplified projection - in a full implementation you'd use proper ray casting */
+        double rx = view->rot_x * M_PI / 180.0;
+        double ry = view->rot_y * M_PI / 180.0;
+        
+        /* Approximate: treat as if viewing from above with rotation */
+        /* Reverse the rotation to get world coordinates */
+        *out_x = vp_x * cos(ry) - vp_y * sin(rx) * sin(ry);
+        *out_y = vp_y * cos(rx);
+        *out_z = vp_x * sin(ry) + vp_y * sin(rx) * cos(ry);
+    } else {
+        /* Orthographic projections - reverse the projection */
+        switch (view->type) {
+        case CAD_VIEW_TOP:
+            /* Top view: viewport X/Y maps to world X/Z, Y is constant (0) */
+            *out_x = vp_x;
+            *out_y = 0.0;  /* Y doesn't change in top view */
+            *out_z = -vp_y;  /* Screen Y is world -Z */
+            break;
+        case CAD_VIEW_FRONT:
+            /* Front view: viewport X/Y maps to world X/Y, Z is constant (0) */
+            *out_x = vp_x;
+            *out_y = -vp_y;  /* Screen Y is world -Y */
+            *out_z = 0.0;  /* Z doesn't change in front view */
+            break;
+        case CAD_VIEW_RIGHT:
+            /* Right view: viewport X/Y maps to world Z/Y, X is constant (0) */
+            *out_x = 0.0;  /* X doesn't change in right view */
+            *out_y = -vp_y;  /* Screen Y is world -Y */
+            *out_z = vp_x;  /* Screen X is world Z */
+            break;
+        default:
+            *out_x = vp_x;
+            *out_y = vp_y;
+            *out_z = 0.0;
+            break;
+        }
+    }
+}

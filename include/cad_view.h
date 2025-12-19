@@ -67,6 +67,15 @@ void CadView_UnprojectDelta(const CadView* view, int screen_dx, int screen_dy,
                             double* out_dx, double* out_dy, double* out_dz);
 
 /* ----------------------------------------------------------------------------
+   Unproject screen point to 3D world coordinates
+   Converts screen coordinates (relative to viewport) to 3D world coordinates
+   For orthographic views, projects onto the view plane at z=0
+   ---------------------------------------------------------------------------- */
+void CadView_UnprojectPoint(const CadView* view, int screen_x, int screen_y,
+                            int viewport_w, int viewport_h,
+                            double* out_x, double* out_y, double* out_z);
+
+/* ----------------------------------------------------------------------------
    Rendering
    ---------------------------------------------------------------------------- */
 void CadView_Render(const CadView* view, const CadCore* core, 
