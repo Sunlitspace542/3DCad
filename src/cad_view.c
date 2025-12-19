@@ -73,6 +73,27 @@ void CadView_Rotate(CadView* view, double dx, double dy) {
     if (view->rot_x < -90.0) view->rot_x = -90.0;
 }
 
+void CadView_Pan3DVertical(CadView* view, double dy) {
+    if (!view || view->type != CAD_VIEW_3D) return;
+    
+    /* Pan up/down relative to current rotation angle */
+    /* Convert rotation to radians */
+    double rx = view->rot_x * M_PI / 180.0;
+    double ry = view->rot_y * M_PI / 180.0;
+    
+    /* Calculate up vector in world space based on rotation */
+    /* The up vector in view space is (0, 1, 0), we need to rotate it */
+    double up_x = -sin(ry) * sin(rx);
+    double up_y = cos(rx);
+    double up_z = cos(ry) * sin(rx);
+    
+    /* Apply panning along the up vector */
+    /* Scale the movement and apply to pan */
+    double pan_scale = 1.0 / view->zoom; /* Adjust for zoom level */
+    view->pan_x += up_x * dy * pan_scale;
+    view->pan_y += up_y * dy * pan_scale;
+}
+
 /* ----------------------------------------------------------------------------
    3D to 2D projection
    ---------------------------------------------------------------------------- */
@@ -584,6 +605,55 @@ int16_t CadView_FindNearestPoint(const CadView* view, const CadCore* core,
     }
     
     return nearest_idx;
+}
+
+/* ----------------------------------------------------------------------------
+   Find all points at the same location as the nearest point
+   ---------------------------------------------------------------------------- */
+
+int CadView_FindPointsAtLocation(const CadView* view, const CadCore* core,
+                                 int screen_x, int screen_y,
+                                 int viewport_x, int viewport_y,
+                                 int viewport_w, int viewport_h,
+                                 int threshold_pixels,
+                                 double world_threshold,
+                                 int16_t* out_indices, int max_count) {
+    if (!view || !core || !out_indices || max_count <= 0) return 0;
+    
+    /* First, find the nearest point */
+    int16_t nearest_idx = CadView_FindNearestPoint(view, core, screen_x, screen_y,
+                                                   viewport_x, viewport_y,
+                                                   viewport_w, viewport_h,
+                                                   threshold_pixels);
+    
+    if (nearest_idx < 0) return 0;
+    
+    /* Get the world coordinates of the nearest point */
+    const CadPoint* nearest_pt = &core->data.points[nearest_idx];
+    if (nearest_pt->flags == 0) return 0;
+    
+    double ref_x = nearest_pt->pointx;
+    double ref_y = nearest_pt->pointy;
+    double ref_z = nearest_pt->pointz;
+    
+    /* Find all points within world_threshold distance of this point */
+    int count = 0;
+    for (int i = 0; i < core->data.pointCount && i < CAD_MAX_POINTS && count < max_count; i++) {
+        const CadPoint* pt = &core->data.points[i];
+        if (pt->flags == 0) continue; /* Skip invalid points */
+        
+        /* Calculate 3D distance */
+        double dx = pt->pointx - ref_x;
+        double dy = pt->pointy - ref_y;
+        double dz = pt->pointz - ref_z;
+        double dist_sq = dx * dx + dy * dy + dz * dz;
+        
+        if (dist_sq <= world_threshold * world_threshold) {
+            out_indices[count++] = (int16_t)i;
+        }
+    }
+    
+    return count;
 }
 
 /* ----------------------------------------------------------------------------

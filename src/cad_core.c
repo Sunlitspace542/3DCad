@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
 #define INVALID_INDEX -1
 
@@ -505,5 +506,190 @@ int CadCore_GetActiveObjectCount(CadCore* core) {
         if (CadCore_IsObjectValid(core, i)) count++;
     }
     return count;
+}
+
+/* ----------------------------------------------------------------------------
+   Merge detection
+   ---------------------------------------------------------------------------- */
+
+/* Convert coordinate to integer (round half up) - matches original Convert() function */
+int CadCore_ConvertCoordinate(double coord) {
+    double fractional;
+    double integer;
+    fractional = coord - (integer = (double)(int)coord);
+    
+    if (coord >= 0.0) {
+        if (fractional >= 0.5) integer += 1.0;
+    } else {
+        if (fractional <= -0.5) integer -= 1.0;
+    }
+    
+    return (int)integer;
+}
+
+static int convert_coordinate(double coord) {
+    return CadCore_ConvertCoordinate(coord);
+}
+
+/* Check if coordinates are merged (all coordinates are integers) */
+int CadCore_AreCoordinatesMerged(CadCore* core) {
+    if (!core) return 0;
+    
+    /* Check all valid points */
+    for (int i = 0; i < core->data.pointCount && i < CAD_MAX_POINTS; i++) {
+        CadPoint* pt = &core->data.points[i];
+        if (pt->flags == 0) continue; /* Skip invalid points */
+        
+        /* Check if coordinates are integers (within epsilon) */
+        double x = pt->pointx;
+        double y = pt->pointy;
+        double z = pt->pointz;
+        
+        /* Convert and check if result matches original (within small epsilon) */
+        int conv_x = convert_coordinate(x);
+        int conv_y = convert_coordinate(y);
+        int conv_z = convert_coordinate(z);
+        
+        const double epsilon = 1e-9;
+        if (fabs(x - (double)conv_x) > epsilon ||
+            fabs(y - (double)conv_y) > epsilon ||
+            fabs(z - (double)conv_z) > epsilon) {
+            return 0; /* Found non-integer coordinate */
+        }
+    }
+    
+    /* Also check object offsets */
+    for (int i = 0; i < core->data.objectCount && i < CAD_MAX_OBJECTS; i++) {
+        CadObject* obj = &core->data.objects[i];
+        if (obj->flags == 0) continue; /* Skip invalid objects */
+        
+        double ox = obj->offsetx;
+        double oy = obj->offsety;
+        double oz = obj->offsetz;
+        
+        int conv_ox = convert_coordinate(ox);
+        int conv_oy = convert_coordinate(oy);
+        int conv_oz = convert_coordinate(oz);
+        
+        const double epsilon = 1e-9;
+        if (fabs(ox - (double)conv_ox) > epsilon ||
+            fabs(oy - (double)conv_oy) > epsilon ||
+            fabs(oz - (double)conv_oz) > epsilon) {
+            return 0; /* Found non-integer offset */
+        }
+    }
+    
+    return 1; /* All coordinates are integers */
+}
+
+/* Check if points are merged (no duplicate points at same grid location) */
+int CadCore_ArePointsMerged(CadCore* core) {
+    if (!core) return 0;
+    
+    /* For each polygon, check for consecutive duplicate points */
+    for (int poly_idx = 0; poly_idx < core->data.polygonCount && poly_idx < CAD_MAX_POLYGONS; poly_idx++) {
+        CadPolygon* poly = &core->data.polygons[poly_idx];
+        if (poly->flags == 0) continue; /* Skip invalid polygons */
+        
+        int16_t point = poly->firstPoint;
+        if (point == INVALID_INDEX) continue;
+        
+        int count = poly->npoints;
+        int16_t visited[64];
+        int visited_count = 0;
+        
+        /* Declare variables for point traversal */
+        int16_t current;
+        int checked;
+        
+        /* Check first point against last point (closed polygon check) */
+        if (count > 1) {
+            int16_t first_point = poly->firstPoint;
+            int16_t last_point = point;
+            
+            /* Find last point */
+            current = point;
+            checked = 0;
+            while (current != INVALID_INDEX && current < CAD_MAX_POINTS && checked < count) {
+                CadPoint* pt = &core->data.points[current];
+                if (pt->flags == 0) break;
+                last_point = current;
+                current = pt->nextPoint;
+                checked++;
+            }
+            
+            if (first_point != INVALID_INDEX && last_point != INVALID_INDEX &&
+                first_point < CAD_MAX_POINTS && last_point < CAD_MAX_POINTS) {
+                CadPoint* first_pt = &core->data.points[first_point];
+                CadPoint* last_pt = &core->data.points[last_point];
+                
+                if (first_pt->flags != 0 && last_pt->flags != 0) {
+                    int first_x = convert_coordinate(first_pt->pointx);
+                    int first_y = convert_coordinate(first_pt->pointy);
+                    int first_z = convert_coordinate(first_pt->pointz);
+                    int last_x = convert_coordinate(last_pt->pointx);
+                    int last_y = convert_coordinate(last_pt->pointy);
+                    int last_z = convert_coordinate(last_pt->pointz);
+                    
+                    if (first_x == last_x && first_y == last_y && first_z == last_z) {
+                        return 0; /* Found duplicate: first and last point are same */
+                    }
+                }
+            }
+        }
+        
+        /* Check consecutive points in polygon */
+        current = point;
+        int16_t prev_point = INVALID_INDEX;
+        checked = 0;
+        
+        while (current != INVALID_INDEX && current < CAD_MAX_POINTS && checked < count) {
+            /* Cycle detection */
+            int already_visited = 0;
+            for (int v = 0; v < visited_count && v < 64; v++) {
+                if (visited[v] == current) {
+                    already_visited = 1;
+                    break;
+                }
+            }
+            if (already_visited) break;
+            if (visited_count < 64) {
+                visited[visited_count++] = current;
+            }
+            
+            CadPoint* pt = &core->data.points[current];
+            if (pt->flags == 0) break;
+            
+            if (prev_point != INVALID_INDEX && prev_point < CAD_MAX_POINTS) {
+                CadPoint* prev_pt = &core->data.points[prev_point];
+                
+                /* Check if converted coordinates match */
+                int prev_x = convert_coordinate(prev_pt->pointx);
+                int prev_y = convert_coordinate(prev_pt->pointy);
+                int prev_z = convert_coordinate(prev_pt->pointz);
+                int curr_x = convert_coordinate(pt->pointx);
+                int curr_y = convert_coordinate(pt->pointy);
+                int curr_z = convert_coordinate(pt->pointz);
+                
+                if (prev_x == curr_x && prev_y == curr_y && prev_z == curr_z) {
+                    return 0; /* Found duplicate consecutive points */
+                }
+            }
+            
+            prev_point = current;
+            current = pt->nextPoint;
+            checked++;
+            if (checked > 1000) break; /* Safety limit */
+        }
+    }
+    
+    return 1; /* No duplicate points found */
+}
+
+/* Check if all merge operations have been applied */
+int CadCore_IsFullyMerged(CadCore* core) {
+    if (!core) return 0;
+    
+    return CadCore_AreCoordinatesMerged(core) && CadCore_ArePointsMerged(core);
 }
 

@@ -7,9 +7,12 @@ typedef struct FontWin32 FontWin32;
 typedef struct GuiInput {
     int mouse_x;
     int mouse_y;
-    int mouse_down;      /* current */
-    int mouse_pressed;   /* went down this frame */
-    int mouse_released;  /* went up this frame */
+    int mouse_down;      /* current (left button) */
+    int mouse_pressed;   /* went down this frame (left button) */
+    int mouse_released;  /* went up this frame (left button) */
+    int mouse_right_down;      /* current (right button) */
+    int mouse_right_pressed;   /* went down this frame (right button) */
+    int mouse_right_released;  /* went up this frame (right button) */
     int wheel_delta;     /* mouse wheel scroll delta (positive = zoom in, negative = zoom out) */
 } GuiInput;
 

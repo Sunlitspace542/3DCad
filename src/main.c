@@ -145,6 +145,18 @@ int main(int argc, char** argv) {
         }
         mouse_down = current_mouse_down;
         last_mouse_down = current_mouse_down;
+        
+        /* Right mouse button state */
+        static int last_mouse_right_down = 0;
+        int current_mouse_right_down = glfwGetMouseButton(win, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
+        int right_pressed = 0, right_released = 0;
+        if (current_mouse_right_down && !last_mouse_right_down) {
+            right_pressed = 1;
+        }
+        if (!current_mouse_right_down && last_mouse_right_down) {
+            right_released = 1;
+        }
+        last_mouse_right_down = current_mouse_right_down;
 
         /* Get window size (logical pixels) - use for layout/coordinates */
         glfwGetWindowSize(win, &w, &h);
@@ -159,6 +171,9 @@ int main(int argc, char** argv) {
         in.mouse_down = mouse_down;
         in.mouse_pressed = pressed;
         in.mouse_released = released;
+        in.mouse_right_down = current_mouse_right_down;
+        in.mouse_right_pressed = right_pressed;
+        in.mouse_right_released = right_released;
         in.wheel_delta = current_wheel_delta;
 
         /* Use window size for layout, framebuffer size for viewport */

@@ -7,6 +7,11 @@
 #include "file_dialog.h"
 #include "cad_view.h"
 #include "cad_export_obj.h"
+#include <math.h>
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -91,6 +96,7 @@ struct GuiState {
     
     /* View interaction */
     int view_interacting; /* Index of view being interacted with, or -1 */
+    int view_right_interacting; /* Index of view being right-click interacted with, or -1 */
     int last_mouse_x;
     int last_mouse_y;
     
@@ -148,14 +154,6 @@ static const char* windowMenuItems[] = {
     " Clean Up",
     " Home",
     "-",
-    " Top Scale +",
-    " Top Scale -",
-    " Front Scale +",
-    " Front Scale -",
-    " Right Scale +",
-    " Right Scale -",
-    " 3D Scale +",
-    " 3D Scale -",
     " All Scales Reset",
     NULL
 };
@@ -239,6 +237,7 @@ static void handle_file_menu_action(GuiState* g, int item_index) {
             g->point_move_active = 0;
             g->point_move_view = -1;
             g->view_interacting = -1;
+            g->view_right_interacting = -1;
             
             /* Reset view states */
             for (int i = 0; i < 4; i++) {
@@ -432,6 +431,22 @@ static void handle_window_menu_action(GuiState* g, int item_index) {
     case 11: /* Home */
         fprintf(stdout, "Home (not implemented yet)\n");
         break;
+    case 12: /* All Scales Reset */
+        for (int i = 0; i < 4; i++) {
+            g->view_scale[i] = 1.0f;
+        }
+        {
+            const int baseX = 180, baseY = 20;
+            const int baseWinW = 560, baseWinH = 330;
+            int winW = baseWinW;
+            int winH = baseWinH;
+            g->view[0].r = (Rect){ baseX + 0,     baseY + 0,     winW, winH };
+            g->view[1].r = (Rect){ baseX + winW,  baseY + 0,     winW, winH };
+            g->view[2].r = (Rect){ baseX + 0,     baseY + winH,  winW, winH };
+            g->view[3].r = (Rect){ baseX + winW,  baseY + winH,  winW, winH };
+        }
+        fprintf(stdout, "All view scales reset to 1.0x\n");
+        break;
     }
 }
 
@@ -555,6 +570,8 @@ GuiState* gui_create(void) {
     g->selected_tool = -1; /* No tool selected initially */
     g->point_move_active = 0;
     g->point_move_view = -1;
+    g->view_interacting = -1;
+    g->view_right_interacting = -1;
     
     /* Initialize individual view scales */
     for (int i = 0; i < 4; i++) {
@@ -750,11 +767,12 @@ void gui_update(GuiState* g, const GuiInput* in, int win_w, int win_h) {
         }
     }
 
-    if (!in->mouse_down) {
+    if (!in->mouse_down && !in->mouse_right_down) {
         g->drag_win = NULL;
         g->resize_win = NULL;
         g->resize_edge = 0;
         g->view_interacting = -1;
+        g->view_right_interacting = -1;
         g->point_move_active = 0;
         g->point_move_view = -1;
     } else if (g->resize_win) {
@@ -859,8 +877,61 @@ void gui_update(GuiState* g, const GuiInput* in, int win_w, int win_h) {
         g->last_mouse_y = in->mouse_y;
     }
     
+    /* Handle right-click view interaction (works even with tools selected) */
+    /* Check for right-click press to start interaction */
+    if (in->mouse_right_pressed && !g->drag_win && !g->resize_win && g->view_right_interacting < 0) {
+        for (int i = 0; i < 4; i++) {
+            Rect vr = g->view[i].r;
+            Rect content = (Rect){ vr.x + 6, vr.y + 26, vr.w - 12, vr.h - 32 };
+            Rect titlebar = (Rect){ vr.x, vr.y, vr.w, 20 };
+            
+            if (pt_in_rect(in->mouse_x, in->mouse_y, content) && 
+                !pt_in_rect(in->mouse_x, in->mouse_y, titlebar)) {
+                /* Right-click works in all views */
+                g->view_right_interacting = i;
+                g->last_mouse_x = in->mouse_x;
+                g->last_mouse_y = in->mouse_y;
+                break;
+            }
+        }
+    }
+    
+    /* Handle right-click dragging (pan in all views) */
+    if (g->view_right_interacting >= 0 && in->mouse_right_down && !g->resize_win) {
+        int dx = in->mouse_x - g->last_mouse_x;
+        int dy = in->mouse_y - g->last_mouse_y;
+        
+        if (g->views[g->view_right_interacting].type == CAD_VIEW_3D) {
+            /* Pan 3D view up/down relative to current angle */
+            CadView_Pan3DVertical(&g->views[g->view_right_interacting], -dy * 0.5);
+            /* Also pan left/right in 3D view */
+            CadView* view = &g->views[g->view_right_interacting];
+            double rx = view->rot_x * M_PI / 180.0;
+            double ry = view->rot_y * M_PI / 180.0;
+            /* Calculate right vector in world space */
+            double right_x = cos(ry);
+            double right_y = 0.0;
+            double right_z = sin(ry);
+            /* Apply panning along the right vector */
+            double pan_scale = 1.0 / view->zoom;
+            view->pan_x += right_x * dx * pan_scale;
+            view->pan_y += right_y * dx * pan_scale;
+        } else {
+            /* Pan other views (Top, Front, Right) - standard pan */
+            CadView_Pan(&g->views[g->view_right_interacting], dx, -dy);
+        }
+        
+        g->last_mouse_x = in->mouse_x;
+        g->last_mouse_y = in->mouse_y;
+    }
+    
+    /* Handle right mouse button release */
+    if (in->mouse_right_released) {
+        g->view_right_interacting = -1;
+    }
+    
     /* Check for view content area clicks (not title bar) */
-    if (in->mouse_pressed && !g->drag_win && !g->resize_win && g->view_interacting < 0) {
+    if (in->mouse_pressed && !g->drag_win && !g->resize_win && g->view_interacting < 0 && g->view_right_interacting < 0) {
         for (int i = 0; i < 4; i++) {
             Rect vr = g->view[i].r;
             Rect content = (Rect){ vr.x + 6, vr.y + 26, vr.w - 12, vr.h - 32 };
@@ -878,22 +949,40 @@ void gui_update(GuiState* g, const GuiInput* in, int win_w, int win_h) {
                     int viewport_w = content.w;
                     int viewport_h = content.h;
                     
-                    int16_t point_idx = CadView_FindNearestPoint(
+                    /* Find all points at the same location (handles merged points) */
+                    int16_t point_indices[64]; /* Max 64 points at same location */
+                    int point_count = CadView_FindPointsAtLocation(
                         &g->views[i], g->cad,
                         in->mouse_x, in->mouse_y,
                         viewport_x, viewport_y,
                         viewport_w, viewport_h,
-                        10 /* 10 pixel threshold */
+                        10, /* 10 pixel screen threshold */
+                        0.01, /* 0.01 unit world threshold for merged points */
+                        point_indices, 64
                     );
                     
-                    if (point_idx >= 0) {
-                        /* Toggle point selection */
-                        if (CadCore_IsPointSelected(g->cad, point_idx)) {
-                            CadCore_DeselectPoint(g->cad, point_idx);
-                            fprintf(stdout, "Deselected point %d\n", point_idx);
+                    if (point_count > 0) {
+                        /* Check if all found points are already selected */
+                        int all_selected = 1;
+                        for (int j = 0; j < point_count; j++) {
+                            if (!CadCore_IsPointSelected(g->cad, point_indices[j])) {
+                                all_selected = 0;
+                                break;
+                            }
+                        }
+                        
+                        if (all_selected) {
+                            /* Deselect all points at this location */
+                            for (int j = 0; j < point_count; j++) {
+                                CadCore_DeselectPoint(g->cad, point_indices[j]);
+                            }
+                            fprintf(stdout, "Deselected %d point(s) at location\n", point_count);
                         } else {
-                            CadCore_SelectPoint(g->cad, point_idx);
-                            fprintf(stdout, "Selected point %d\n", point_idx);
+                            /* Select all points at this location */
+                            for (int j = 0; j < point_count; j++) {
+                                CadCore_SelectPoint(g->cad, point_indices[j]);
+                            }
+                            fprintf(stdout, "Selected %d point(s) at location\n", point_count);
                         }
                     }
                 } else if (g->selected_tool == 6 && g->cad->selection.pointCount > 0) {
@@ -1172,9 +1261,35 @@ static void gui_draw_gui_elements(GuiState* g, int win_w, int win_h) {
                 avg_y /= valid_count;
                 avg_z /= valid_count;
                 
-                if (valid_count == 1) {
+                /* Check if all points are at the same location (merged points) */
+                int all_same_location = 1;
+                const double location_threshold = 0.01; /* 0.01 unit threshold */
+                
+                if (valid_count > 1) {
+                    for (int i = 0; i < g->cad->selection.pointCount; i++) {
+                        int16_t point_idx = g->cad->selection.selectedPoints[i];
+                        if (point_idx < 0) continue;
+                        
+                        CadPoint* pt = CadCore_GetPoint(g->cad, point_idx);
+                        if (!pt) continue;
+                        
+                        double dx = pt->pointx - avg_x;
+                        double dy = pt->pointy - avg_y;
+                        double dz = pt->pointz - avg_z;
+                        double dist_sq = dx * dx + dy * dy + dz * dz;
+                        
+                        if (dist_sq > location_threshold * location_threshold) {
+                            all_same_location = 0;
+                            break;
+                        }
+                    }
+                }
+                
+                if (valid_count == 1 || all_same_location) {
+                    /* Single point or all points at same location - show coordinates */
                     snprintf(coord_str, sizeof(coord_str), "X=%.2f   Y=%.2f   Z=%.2f", avg_x, avg_y, avg_z);
                 } else {
+                    /* Multiple points at different locations - show average */
                     snprintf(coord_str, sizeof(coord_str), "X=%.2f   Y=%.2f   Z=%.2f  (avg of %d)", avg_x, avg_y, avg_z, valid_count);
                 }
             } else {

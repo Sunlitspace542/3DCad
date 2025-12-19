@@ -129,4 +129,20 @@ int CadCore_GetActivePointCount(CadCore* core);
 int CadCore_GetActivePolygonCount(CadCore* core);
 int CadCore_GetActiveObjectCount(CadCore* core);
 
+/* ----------------------------------------------------------------------------
+   Merge detection
+   ---------------------------------------------------------------------------- */
+
+/* Convert coordinate to integer (round half up) - matches original Convert() function */
+int CadCore_ConvertCoordinate(double coord);
+
+/* Check if coordinates are merged (all coordinates are integers) */
+int CadCore_AreCoordinatesMerged(CadCore* core);
+
+/* Check if points are merged (no duplicate points at same grid location) */
+int CadCore_ArePointsMerged(CadCore* core);
+
+/* Check if all merge operations have been applied */
+int CadCore_IsFullyMerged(CadCore* core);
+
 

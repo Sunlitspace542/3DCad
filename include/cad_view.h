@@ -41,6 +41,7 @@ void CadView_Reset(CadView* view);
 void CadView_SetZoom(CadView* view, double zoom);
 void CadView_Pan(CadView* view, double dx, double dy);
 void CadView_Rotate(CadView* view, double dx, double dy);
+void CadView_Pan3DVertical(CadView* view, double dy); /* Pan 3D view up/down relative to current angle */
 
 /* ----------------------------------------------------------------------------
    3D to 2D projection
@@ -57,6 +58,19 @@ int16_t CadView_FindNearestPoint(const CadView* view, const CadCore* core,
                                  int viewport_x, int viewport_y,
                                  int viewport_w, int viewport_h,
                                  int threshold_pixels);
+
+/* ----------------------------------------------------------------------------
+   Find all points at the same location as the nearest point
+   Fills out_indices array with point indices (up to max_count)
+   Returns number of points found, or 0 if none found
+   ---------------------------------------------------------------------------- */
+int CadView_FindPointsAtLocation(const CadView* view, const CadCore* core,
+                                 int screen_x, int screen_y,
+                                 int viewport_x, int viewport_y,
+                                 int viewport_w, int viewport_h,
+                                 int threshold_pixels,
+                                 double world_threshold,
+                                 int16_t* out_indices, int max_count);
 
 /* ----------------------------------------------------------------------------
    Unproject screen delta to 3D world delta
