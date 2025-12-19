@@ -70,6 +70,7 @@ struct GuiState {
     GuiWin toolPalette;      /* 120x410 left */
     GuiWin view[4];          /* 4 view windows */
     GuiWin coordBox;         /* coordinates/info */
+    GuiWin animationWindow;  /* Animation window */
 
     /* Menu bar */
     const char* menus[5];
@@ -310,7 +311,17 @@ static void handle_file_menu_action(GuiState* g, int item_index) {
         fprintf(stdout, "Load Palette (not implemented)\n");
         break;
     case 10: /* Animation */
-        fprintf(stdout, "Show Animation (not implemented)\n");
+        /* Toggle animation window visibility */
+        if (g->animationWindow.r.w == 0 || g->animationWindow.r.h == 0) {
+            /* Show window */
+            g->animationWindow.r = (Rect){ 500, 200, 300, 200 };
+            fprintf(stdout, "Animation window opened\n");
+        } else {
+            /* Hide window */
+            g->animationWindow.r.w = 0;
+            g->animationWindow.r.h = 0;
+            fprintf(stdout, "Animation window closed\n");
+        }
         break;
     case 12: /* (Q)Quit */
         fprintf(stdout, "Quit (application exit not handled here)\n");
@@ -605,6 +616,9 @@ GuiState* gui_create(void) {
     g->view[3] = (GuiWin){ "Right", { baseX + winW0,  baseY + winH0,  winW3, winH3 }, 1 };
 
     g->coordBox = (GuiWin){ "COORDINATES", { 20, 860, 425, 80 }, 1 };
+    g->animationWindow = (GuiWin){ "ANIMATION", { 500, 200, 300, 200 }, 1 };
+    g->animationWindow.r.w = 0; /* Start hidden (width 0) */
+    g->animationWindow.r.h = 0; /* Start hidden (height 0) */
 
     return g;
 }
@@ -758,6 +772,12 @@ void gui_update(GuiState* g, const GuiInput* in, int win_w, int win_h) {
             titlebar = (Rect){ g->coordBox.r.x, g->coordBox.r.y, g->coordBox.r.w, 20 };
             if (!g->drag_win && g->coordBox.draggable && pt_in_rect(in->mouse_x, in->mouse_y, titlebar)) {
                 g->drag_win = &g->coordBox;
+            }
+            if (g->animationWindow.r.w > 0 && g->animationWindow.r.h > 0) {
+                titlebar = (Rect){ g->animationWindow.r.x, g->animationWindow.r.y, g->animationWindow.r.w, 20 };
+                if (!g->drag_win && g->animationWindow.draggable && pt_in_rect(in->mouse_x, in->mouse_y, titlebar)) {
+                    g->drag_win = &g->animationWindow;
+                }
             }
 
             if (g->drag_win) {
@@ -1170,10 +1190,10 @@ static void gui_draw_gui_elements(GuiState* g, int win_w, int win_h) {
         }
     }
 
-    /* Windows chrome */
+    /* Windows chrome - view windows only (they contain CAD models, so drawn before CAD) */
     draw_window_chrome(g, &g->toolPalette, win_h, 1.0f, 1.0f);
     for (int i = 0; i < 4; i++) draw_window_chrome(g, &g->view[i], win_h, 1.0f, 1.0f);
-    draw_window_chrome(g, &g->coordBox, win_h, 1.0f, 1.0f);
+    /* Note: coordBox and animationWindow chrome drawn after CAD views so they appear on top */
 
     /* Tool palette contents - draw tool icons in 2 columns */
     Rect tp = g->toolPalette.r;
@@ -1230,76 +1250,7 @@ static void gui_draw_gui_elements(GuiState* g, int win_w, int win_h) {
         draw_scrollbars_placeholder(content);
     }
 
-    /* Coordinates box - show selected point coordinates */
-    Rect cr = g->coordBox.r;
-    Rect cinner = (Rect){ cr.x + 6, cr.y + 26, cr.w - 12, cr.h - 32 };
-    rg_fill_rect(cinner.x, cinner.y, cinner.w, cinner.h, (RG_Color){250,250,250,255});
-    rg_stroke_rect(cinner.x, cinner.y, cinner.w, cinner.h, (RG_Color){120,120,120,255});
-    
-    if (g->font && g->cad) {
-        char coord_str[128];
-        if (g->cad->selection.pointCount > 0) {
-            /* Calculate average of selected points */
-            double avg_x = 0.0, avg_y = 0.0, avg_z = 0.0;
-            int valid_count = 0;
-            
-            for (int i = 0; i < g->cad->selection.pointCount; i++) {
-                int16_t point_idx = g->cad->selection.selectedPoints[i];
-                if (point_idx < 0) continue;
-                
-                CadPoint* pt = CadCore_GetPoint(g->cad, point_idx);
-                if (!pt) continue;
-                
-                avg_x += pt->pointx;
-                avg_y += pt->pointy;
-                avg_z += pt->pointz;
-                valid_count++;
-            }
-            
-            if (valid_count > 0) {
-                avg_x /= valid_count;
-                avg_y /= valid_count;
-                avg_z /= valid_count;
-                
-                /* Check if all points are at the same location (merged points) */
-                int all_same_location = 1;
-                const double location_threshold = 0.01; /* 0.01 unit threshold */
-                
-                if (valid_count > 1) {
-                    for (int i = 0; i < g->cad->selection.pointCount; i++) {
-                        int16_t point_idx = g->cad->selection.selectedPoints[i];
-                        if (point_idx < 0) continue;
-                        
-                        CadPoint* pt = CadCore_GetPoint(g->cad, point_idx);
-                        if (!pt) continue;
-                        
-                        double dx = pt->pointx - avg_x;
-                        double dy = pt->pointy - avg_y;
-                        double dz = pt->pointz - avg_z;
-                        double dist_sq = dx * dx + dy * dy + dz * dz;
-                        
-                        if (dist_sq > location_threshold * location_threshold) {
-                            all_same_location = 0;
-                            break;
-                        }
-                    }
-                }
-                
-                if (valid_count == 1 || all_same_location) {
-                    /* Single point or all points at same location - show coordinates */
-                    snprintf(coord_str, sizeof(coord_str), "X=%.2f   Y=%.2f   Z=%.2f", avg_x, avg_y, avg_z);
-                } else {
-                    /* Multiple points at different locations - show average */
-                    snprintf(coord_str, sizeof(coord_str), "X=%.2f   Y=%.2f   Z=%.2f  (avg of %d)", avg_x, avg_y, avg_z, valid_count);
-                }
-            } else {
-                snprintf(coord_str, sizeof(coord_str), "No valid points selected");
-            }
-        } else {
-            snprintf(coord_str, sizeof(coord_str), "No points selected");
-        }
-        font_draw(g->font, cinner.x + 8, cinner.y + 6, coord_str, 0);
-    }
+    /* Note: Coordinates box and Animation window content drawn after CAD views */
 }
 
 /* ============================================================================
@@ -1491,7 +1442,92 @@ void gui_draw(GuiState* g, const GuiInput* in, int win_w, int win_h, int fb_w, i
     /* Step 2: Draw CAD models in viewports (with proper 3D/depth state) */
     gui_draw_cad_views(g, win_w, win_h, fb_w, fb_h, in);
     
-    /* Step 3: Draw dropdown menu last (on top of everything) */
+    /* Step 3: Draw windows that should appear on top of CAD models */
+    draw_window_chrome(g, &g->coordBox, win_h, 1.0f, 1.0f);
+    if (g->animationWindow.r.w > 0 && g->animationWindow.r.h > 0) {
+        draw_window_chrome(g, &g->animationWindow, win_h, 1.0f, 1.0f);
+    }
+    
+    /* Draw coordinates box content */
+    Rect cr = g->coordBox.r;
+    Rect cinner = (Rect){ cr.x + 6, cr.y + 26, cr.w - 12, cr.h - 32 };
+    rg_fill_rect(cinner.x, cinner.y, cinner.w, cinner.h, (RG_Color){250,250,250,255});
+    rg_stroke_rect(cinner.x, cinner.y, cinner.w, cinner.h, (RG_Color){120,120,120,255});
+    
+    if (g->font && g->cad) {
+        char coord_str[128];
+        if (g->cad->selection.pointCount > 0) {
+            /* Calculate average of selected points */
+            double avg_x = 0.0, avg_y = 0.0, avg_z = 0.0;
+            int valid_count = 0;
+            
+            for (int i = 0; i < g->cad->selection.pointCount; i++) {
+                int16_t point_idx = g->cad->selection.selectedPoints[i];
+                if (point_idx < 0) continue;
+                
+                CadPoint* pt = CadCore_GetPoint(g->cad, point_idx);
+                if (!pt) continue;
+                
+                avg_x += pt->pointx;
+                avg_y += pt->pointy;
+                avg_z += pt->pointz;
+                valid_count++;
+            }
+            
+            if (valid_count > 0) {
+                avg_x /= valid_count;
+                avg_y /= valid_count;
+                avg_z /= valid_count;
+                
+                /* Check if all points are at the same location (merged points) */
+                int all_same_location = 1;
+                const double location_threshold = 0.01; /* 0.01 unit threshold */
+                
+                if (valid_count > 1) {
+                    for (int i = 0; i < g->cad->selection.pointCount; i++) {
+                        int16_t point_idx = g->cad->selection.selectedPoints[i];
+                        if (point_idx < 0) continue;
+                        
+                        CadPoint* pt = CadCore_GetPoint(g->cad, point_idx);
+                        if (!pt) continue;
+                        
+                        double dx = pt->pointx - avg_x;
+                        double dy = pt->pointy - avg_y;
+                        double dz = pt->pointz - avg_z;
+                        double dist_sq = dx * dx + dy * dy + dz * dz;
+                        
+                        if (dist_sq > location_threshold * location_threshold) {
+                            all_same_location = 0;
+                            break;
+                        }
+                    }
+                }
+                
+                if (valid_count == 1 || all_same_location) {
+                    /* Single point or all points at same location - show coordinates */
+                    snprintf(coord_str, sizeof(coord_str), "X=%.2f   Y=%.2f   Z=%.2f", avg_x, avg_y, avg_z);
+                } else {
+                    /* Multiple points at different locations - show average */
+                    snprintf(coord_str, sizeof(coord_str), "X=%.2f   Y=%.2f   Z=%.2f  (avg of %d)", avg_x, avg_y, avg_z, valid_count);
+                }
+            } else {
+                snprintf(coord_str, sizeof(coord_str), "No valid points selected");
+            }
+        } else {
+            snprintf(coord_str, sizeof(coord_str), "No points selected");
+        }
+        font_draw(g->font, cinner.x + 8, cinner.y + 6, coord_str, 0);
+    }
+    
+    /* Draw animation window content (empty for now) */
+    if (g->animationWindow.r.w > 0 && g->animationWindow.r.h > 0) {
+        Rect ar = g->animationWindow.r;
+        Rect ainner = (Rect){ ar.x + 6, ar.y + 26, ar.w - 12, ar.h - 32 };
+        rg_fill_rect(ainner.x, ainner.y, ainner.w, ainner.h, (RG_Color){250,250,250,255});
+        rg_stroke_rect(ainner.x, ainner.y, ainner.w, ainner.h, (RG_Color){120,120,120,255});
+    }
+    
+    /* Step 4: Draw dropdown menu last (on top of everything) */
     gui_draw_dropdown(g, win_w, win_h);
     
     /* Final reset to ensure clean state */
