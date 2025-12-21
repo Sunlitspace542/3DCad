@@ -54,7 +54,7 @@ int CadExport_3DG1(const CadCore* core, const char* filename) {
     for (int i = 0; i < core->data.pointCount && i < CAD_MAX_POINTS; i++) {
         const CadPoint* pt = &core->data.points[i];
         if (pt->flags != 0) {
-            point_to_vertex[i] = vertex_count + 1; /* OBJ uses 1-based indexing */
+            point_to_vertex[i] = vertex_count + 1; /* 3DG1 uses 1-based indexing */
             vertex_count++;
         } else {
             point_to_vertex[i] = -1; /* Invalid point */
@@ -63,7 +63,7 @@ int CadExport_3DG1(const CadCore* core, const char* filename) {
 
     /* Write Fundoshi-Kun header */
     fprintf(fp_obj, "3DG1\n"); // 3DG1 magic
-    fprintf(fp_obj, "%d\n", vertex_count); // total points (counting from 1)
+    fprintf(fp_obj, "%d\n", vertex_count); // total points in this shape (1-index)
     
     /* Step 2: Write all vertices */
     for (int i = 0; i < core->data.pointCount && i < CAD_MAX_POINTS; i++) {
@@ -73,8 +73,6 @@ int CadExport_3DG1(const CadCore* core, const char* filename) {
             fprintf(fp_obj, "%.f %.f %.f\n", pt->pointx, pt->pointy, pt->pointz); // we don't need all this precision
         }
     }
-    
-    fprintf(fp_obj, "\n");
     
     /* Step 2: Write all faces (polygons) with material assignments */
     uint8_t current_material = 255; /* Invalid, will force first material to be set */
@@ -108,17 +106,18 @@ int CadExport_3DG1(const CadCore* core, const char* filename) {
         }
         
         /* Write face if we have at least 3 vertices */
+        /* number_of_points point_index_1 ... point_index_n color_index */
         if (point_count >= 3) {
             fprintf(fp_obj, "%d", point_count); // Fundoshi-Kun needs number of points at start of face entry
             for (int j = 0; j < point_count; j++) {
-                int point_idx = (point_indices[j] - 1);  // Fundoshi-Kun vert references are 0 indexed
+                int point_idx = (point_indices[j] - 1);  // Fundoshi-Kun point references are 0-indexed
                 fprintf(fp_obj, " %d", point_idx);
             }
             fprintf(fp_obj, " %d", current_material); // Fundoshi-Kun needs color/texture index at end of face entry
             fprintf(fp_obj, "\n");
         }
     }
-    
+    fprintf(fp_obj, "\x1a"); // End-of-File marker
     fclose(fp_obj);
     return 1;
 }
