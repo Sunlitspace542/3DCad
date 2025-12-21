@@ -79,7 +79,7 @@ int CadExport_3DG1(const CadCore* core, const char* filename) {
     
     for (int i = 0; i < core->data.polygonCount && i < CAD_MAX_POLYGONS; i++) {
         const CadPolygon* poly = &core->data.polygons[i];
-        if (poly->flags == 0 || poly->npoints < 3) continue;
+        if (poly->flags == 0 || poly->npoints < 2) continue; // Star Fox allows faces with at least 2 points (colored lines) 
         
         /* Set material if it changed */
         if (poly->color != current_material) {
@@ -105,9 +105,9 @@ int CadExport_3DG1(const CadCore* core, const char* filename) {
             if (point_count > 1000) break; /* Safety limit */
         }
         
-        /* Write face if we have at least 3 vertices */
+        /* Write face if we have at least 2 vertices */
         /* number_of_points point_index_1 ... point_index_n color_index */
-        if (point_count >= 3) {
+        if (point_count >= 2) { // Star Fox allows faces with at least 2 points (colored lines)
             fprintf(fp_obj, "%d", point_count); // Fundoshi-Kun needs number of points at start of face entry
             for (int j = 0; j < point_count; j++) {
                 int point_idx = (point_indices[j] - 1);  // Fundoshi-Kun point references are 0-indexed
