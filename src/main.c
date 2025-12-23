@@ -113,6 +113,7 @@ int main(int argc, char** argv) {
     GuiState* gui = gui_create();
     gui_set_font(gui, font);
     gui_load_tool_icons(gui, "resources");
+    gui_load_anim_icons(gui, "resources");
 
     int mouse_down = 0;
     int mx = 0, my = 0;

@@ -9,6 +9,11 @@
 #include <stdint.h>
 
 /* ----------------------------------------------------------------------------
+   Constants
+   ---------------------------------------------------------------------------- */
+#define INVALID_INDEX -1
+
+/* ----------------------------------------------------------------------------
    Edit modes
    ---------------------------------------------------------------------------- */
 typedef enum {
@@ -144,5 +149,8 @@ int CadCore_ArePointsMerged(CadCore* core);
 
 /* Check if all merge operations have been applied */
 int CadCore_IsFullyMerged(CadCore* core);
+
+/* Check if a point is connected to any polygon (not orphaned) */
+int CadCore_IsPointConnected(CadCore* core, int16_t pointIndex);
 
 

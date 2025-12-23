@@ -81,6 +81,9 @@ struct GuiState {
     /* Tool icons */
     RG_Texture* tool_icons[TOOL_COUNT];
     int selected_tool; /* Currently selected tool index, or -1 if none */
+    
+    /* Animation icons */
+    RG_Texture* anim_icons[12]; /* Animation control icons */
 
     /* Dragging */
     GuiWin* drag_win;
@@ -107,6 +110,12 @@ struct GuiState {
     
     /* View window scaling (individual scale per view) */
     float view_scale[4]; /* Scale factor for each view window (default 1.0) */
+    
+    /* Animation state */
+    int anim_current_frame; /* Current frame number (0-based) */
+    int anim_total_frames;  /* Total number of frames */
+    int anim_playing;        /* 1 if playing, 0 if paused */
+    int anim_loop;          /* 1 if looping, 0 if not */
 };
 
 static int MenuBarHeight(void) { return 20; }
@@ -314,7 +323,7 @@ static void handle_file_menu_action(GuiState* g, int item_index) {
         /* Toggle animation window visibility */
         if (g->animationWindow.r.w == 0 || g->animationWindow.r.h == 0) {
             /* Show window */
-            g->animationWindow.r = (Rect){ 500, 200, 300, 200 };
+            g->animationWindow.r = (Rect){ 500, 200, 600, 400 };
             fprintf(stdout, "Animation window opened\n");
         } else {
             /* Hide window */
@@ -578,6 +587,9 @@ GuiState* gui_create(void) {
     for (int i = 0; i < TOOL_COUNT; i++) {
         g->tool_icons[i] = NULL;
     }
+    for (int i = 0; i < 12; i++) {
+        g->anim_icons[i] = NULL;
+    }
     g->selected_tool = -1; /* No tool selected initially */
     g->point_move_active = 0;
     g->point_move_view = -1;
@@ -616,9 +628,15 @@ GuiState* gui_create(void) {
     g->view[3] = (GuiWin){ "Right", { baseX + winW0,  baseY + winH0,  winW3, winH3 }, 1 };
 
     g->coordBox = (GuiWin){ "COORDINATES", { 20, 860, 425, 80 }, 1 };
-    g->animationWindow = (GuiWin){ "ANIMATION", { 500, 200, 300, 200 }, 1 };
+    g->animationWindow = (GuiWin){ "ANIMATION", { 500, 200, 600, 400 }, 1 };
     g->animationWindow.r.w = 0; /* Start hidden (width 0) */
     g->animationWindow.r.h = 0; /* Start hidden (height 0) */
+    
+    /* Initialize animation state */
+    g->anim_current_frame = 0;
+    g->anim_total_frames = 0;
+    g->anim_playing = 0;
+    g->anim_loop = 0;
 
     return g;
 }
@@ -634,6 +652,12 @@ void gui_destroy(GuiState* g) {
     for (int i = 0; i < TOOL_COUNT; i++) {
         if (g->tool_icons[i]) {
             rg_free_texture(g->tool_icons[i]);
+        }
+    }
+    /* Free animation icons */
+    for (int i = 0; i < 12; i++) {
+        if (g->anim_icons[i]) {
+            rg_free_texture(g->anim_icons[i]);
         }
     }
     free(g);
@@ -681,6 +705,35 @@ void gui_load_tool_icons(GuiState* g, const char* resource_path) {
         g->tool_icons[i] = rg_load_texture(path);
         if (!g->tool_icons[i]) {
             fprintf(stderr, "Warning: Failed to load tool icon %d: %s\n", i, tool_names[i]);
+        }
+    }
+}
+
+void gui_load_anim_icons(GuiState* g, const char* resource_path) {
+    if (!g) return;
+    
+    /* Animation icon filenames in order (matching animIcons array from bitmap.c) */
+    const char* anim_names[12] = {
+        "beframe_bits_48x24.png",      /* 0: First frame (24x48 in code, but file is 48x24) */
+        "topfram_bits_24x48.png",      /* 1: Last frame */
+        "beforeframe_bits_24x48.png",  /* 2: Previous frame */
+        "goframe_bits_32x48.png",      /* 3: GO/Play button (30x48 in code) */
+        "nextframe_bits_24x48.png",    /* 4: Next frame */
+        "nexframe_bits_24x48.png",     /* 5: Fast forward */
+        "kplus_bits_32x20.png",        /* 6: Add keyframe (30x20 in code) */
+        "kminus_bits_32x20.png",       /* 7: Delete keyframe (30x20 in code) */
+        "plus_bits_32x30.png",         /* 8: Add frame (30x30 in code) */
+        "minus_bits_32x30.png",        /* 9: Delete frame (30x30 in code) */
+        "copy_bits_32x30.png",         /* 10: Copy (30x30 in code) */
+        "toguru_bits_48x24.png"        /* 11: Loop toggle (48x24 in code) */
+    };
+    
+    char path[512];
+    for (int i = 0; i < 12; i++) {
+        snprintf(path, sizeof(path), "%s/%s", resource_path, anim_names[i]);
+        g->anim_icons[i] = rg_load_texture(path);
+        if (!g->anim_icons[i]) {
+            fprintf(stderr, "Warning: Failed to load animation icon %d: %s\n", i, anim_names[i]);
         }
     }
 }
@@ -898,8 +951,11 @@ void gui_update(GuiState* g, const GuiInput* in, int win_w, int win_h) {
     }
     
     /* Handle right-click view interaction (works even with tools selected) */
+    /* BUT: Disable right-click panning when make tool is active (tool 3) to allow right-click to finalize faces */
+    int make_tool_active = (g->selected_tool == 3);
+    
     /* Check for right-click press to start interaction */
-    if (in->mouse_right_pressed && !g->drag_win && !g->resize_win && g->view_right_interacting < 0) {
+    if (in->mouse_right_pressed && !g->drag_win && !g->resize_win && g->view_right_interacting < 0 && !make_tool_active) {
         for (int i = 0; i < 4; i++) {
             Rect vr = g->view[i].r;
             Rect content = (Rect){ vr.x + 6, vr.y + 26, vr.w - 12, vr.h - 32 };
@@ -917,7 +973,8 @@ void gui_update(GuiState* g, const GuiInput* in, int win_w, int win_h) {
     }
     
     /* Handle right-click dragging (pan in all views) */
-    if (g->view_right_interacting >= 0 && in->mouse_right_down && !g->resize_win) {
+    /* Also disable if make tool is active */
+    if (g->view_right_interacting >= 0 && in->mouse_right_down && !g->resize_win && !make_tool_active) {
         int dx = in->mouse_x - g->last_mouse_x;
         int dy = in->mouse_y - g->last_mouse_y;
         
@@ -947,11 +1004,15 @@ void gui_update(GuiState* g, const GuiInput* in, int win_w, int win_h) {
     
     /* Handle right mouse button release */
     if (in->mouse_right_released) {
-        g->view_right_interacting = -1;
+        /* If make tool is active, don't reset view interaction (let make tool handle it) */
+        if (!make_tool_active) {
+            g->view_right_interacting = -1;
+        }
     }
     
-    /* Check for view content area clicks (not title bar) */
-    if (in->mouse_pressed && !g->drag_win && !g->resize_win && g->view_interacting < 0 && g->view_right_interacting < 0) {
+    
+    /* Check for view content area clicks (not title bar) - includes right-click for make tool */
+    if ((in->mouse_pressed || (make_tool_active && in->mouse_right_pressed)) && !g->drag_win && !g->resize_win && g->view_interacting < 0 && g->view_right_interacting < 0) {
         for (int i = 0; i < 4; i++) {
             Rect vr = g->view[i].r;
             Rect content = (Rect){ vr.x + 6, vr.y + 26, vr.w - 12, vr.h - 32 };
@@ -961,49 +1022,246 @@ void gui_update(GuiState* g, const GuiInput* in, int win_w, int win_h) {
             if (pt_in_rect(in->mouse_x, in->mouse_y, content) && 
                 !pt_in_rect(in->mouse_x, in->mouse_y, titlebar)) {
                 
-                /* Check if point select tool is active (tool 0) */
-                if (g->selected_tool == 0 && g->cad->editMode == CAD_MODE_SELECT_POINT) {
+                /* Check if point select tool is active (tool 0) or make tool (tool 3) */
+                if ((g->selected_tool == 0 || g->selected_tool == 3) && g->cad->editMode == CAD_MODE_SELECT_POINT) {
                     /* Point selection mode - find and select/deselect point */
                     int viewport_x = content.x;
                     int viewport_y = content.y;
                     int viewport_w = content.w;
                     int viewport_h = content.h;
                     
-                    /* Find all points at the same location (handles merged points) */
-                    int16_t point_indices[64]; /* Max 64 points at same location */
-                    int point_count = CadView_FindPointsAtLocation(
-                        &g->views[i], g->cad,
-                        in->mouse_x, in->mouse_y,
-                        viewport_x, viewport_y,
-                        viewport_w, viewport_h,
-                        10, /* 10 pixel screen threshold */
-                        0.01, /* 0.01 unit world threshold for merged points */
-                        point_indices, 64
+                    if (g->selected_tool == 3) {
+                        /* Make tool - left click adds points, right click selects final point and creates face */
+                        if (in->mouse_pressed) {
+                            /* Left click - add point to selection */
+                            int16_t point_to_select = CadView_FindNearestPoint(
+                                &g->views[i], g->cad,
+                                in->mouse_x, in->mouse_y,
+                                viewport_x, viewport_y,
+                                viewport_w, viewport_h,
+                                10 /* 10 pixel screen threshold */
+                            );
+                            
+                            if (point_to_select >= 0) {
+                                /* Make tool - allow selecting up to 11 points (12th will be right-clicked) */
+                                if (g->cad->selection.pointCount < 11) {
+                                    /* Only select if not already selected */
+                                    if (!CadCore_IsPointSelected(g->cad, point_to_select)) {
+                                        CadCore_SelectPoint(g->cad, point_to_select);
+                                        fprintf(stdout, "Selected point %d for face creation (%d/11, right-click final point)\n", 
+                                                point_to_select, g->cad->selection.pointCount);
+                                    } else {
+                                        fprintf(stdout, "Point %d already selected\n", point_to_select);
+                                    }
+                                } else {
+                                    fprintf(stdout, "Maximum 11 points reached. Right-click a point to finalize face.\n");
+                                }
+                            }
+                        } else if (in->mouse_right_pressed) {
+                            /* Right click - select final point and create face */
+                            int16_t final_point = CadView_FindNearestPoint(
+                                &g->views[i], g->cad,
+                                in->mouse_x, in->mouse_y,
+                                viewport_x, viewport_y,
+                                viewport_w, viewport_h,
+                                10 /* 10 pixel screen threshold */
+                            );
+                            
+                            if (final_point >= 0) {
+                                /* Add final point to selection if not already selected */
+                                if (!CadCore_IsPointSelected(g->cad, final_point)) {
+                                    if (g->cad->selection.pointCount < 12) {
+                                        CadCore_SelectPoint(g->cad, final_point);
+                                    }
+                                }
+                                
+                                int point_count = g->cad->selection.pointCount;
+                                
+                                if (point_count < 2) {
+                                    fprintf(stderr, "Need at least 2 points to create a face\n");
+                                    CadCore_ClearSelection(g->cad);
+                                } else if (point_count > 12) {
+                                    fprintf(stderr, "Maximum 12 points allowed per face\n");
+                                    CadCore_ClearSelection(g->cad);
+                                } else {
+                                    /* Get all selected points */
+                                    int16_t selected_points[12];
+                                    int valid_count = 0;
+                                    for (int j = 0; j < point_count && j < 12; j++) {
+                                        int16_t pt_idx = g->cad->selection.selectedPoints[j];
+                                        if (pt_idx >= 0 && CadCore_IsPointValid(g->cad, pt_idx)) {
+                                            selected_points[valid_count++] = pt_idx;
+                                        }
+                                    }
+                                    
+                                    if (valid_count < 2) {
+                                        fprintf(stderr, "Need at least 2 valid points to create a face\n");
+                                        CadCore_ClearSelection(g->cad);
+                                    } else {
+                                        int16_t p1 = selected_points[0];
+                                        
+                                        /* Check if a polygon with these exact points already exists */
+                                        int polygon_exists = 0;
+                                        for (int poly_i = 0; poly_i < g->cad->data.polygonCount; poly_i++) {
+                                            CadPolygon* existing_poly = CadCore_GetPolygon(g->cad, poly_i);
+                                            if (!existing_poly || existing_poly->flags == 0) continue;
+                                            if (existing_poly->npoints != valid_count) continue;
+                                            
+                                            /* Traverse the polygon's point chain */
+                                            int16_t chain_points[12];
+                                            int16_t current = existing_poly->firstPoint;
+                                            int count = 0;
+                                            int visited_count = 0;
+                                            int16_t visited[64];
+                                            
+                                            while (current >= 0 && current < CAD_MAX_POINTS && count < valid_count && visited_count < 64) {
+                                                /* Cycle detection */
+                                                int already_visited = 0;
+                                                for (int v = 0; v < visited_count; v++) {
+                                                    if (visited[v] == current) {
+                                                        already_visited = 1;
+                                                        break;
+                                                    }
+                                                }
+                                                if (already_visited) break;
+                                                visited[visited_count++] = current;
+                                                
+                                                chain_points[count++] = current;
+                                                
+                                                CadPoint* curr_pt = CadCore_GetPoint(g->cad, current);
+                                                if (!curr_pt || curr_pt->flags == 0) break;
+                                                current = curr_pt->nextPoint;
+                                            }
+                                            
+                                            /* Check if this polygon has the same points in the same order */
+                                            if (count == valid_count) {
+                                                int match = 1;
+                                                for (int k = 0; k < valid_count; k++) {
+                                                    if (chain_points[k] != selected_points[k]) {
+                                                        match = 0;
+                                                        break;
+                                                    }
+                                                }
+                                                if (match) {
+                                                    polygon_exists = 1;
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                        
+                                        if (polygon_exists) {
+                                            fprintf(stderr, "Polygon with these points already exists\n");
+                                            CadCore_ClearSelection(g->cad);
+                                        } else {
+                                            /* Create polygon with first point */
+                                            int16_t poly_idx = CadCore_AddPolygon(g->cad, p1, 0, valid_count);
+                                            
+                                            if (poly_idx != INVALID_INDEX) {
+                                                /* Link the points together */
+                                                for (int j = 0; j < valid_count; j++) {
+                                                    int16_t current_pt = selected_points[j];
+                                                    int16_t next_pt = (j < valid_count - 1) ? selected_points[j + 1] : INVALID_INDEX;
+                                                    
+                                                    CadPoint* pt = CadCore_GetPoint(g->cad, current_pt);
+                                                    if (!pt) continue;
+                                                    
+                                                    /* Check if this point is already used as firstPoint of another polygon */
+                                                    int is_firstPoint = 0;
+                                                    for (int poly_i = 0; poly_i < g->cad->data.polygonCount; poly_i++) {
+                                                        CadPolygon* existing_poly = CadCore_GetPolygon(g->cad, poly_i);
+                                                        if (!existing_poly || existing_poly->flags == 0) continue;
+                                                        if (existing_poly->firstPoint == current_pt && poly_i != poly_idx) {
+                                                            is_firstPoint = 1;
+                                                            break;
+                                                        }
+                                                    }
+                                                    
+                                                    /* Only set nextPoint if not already a firstPoint, or if nextPoint matches what we want */
+                                                    if (!is_firstPoint) {
+                                                        if (pt->nextPoint == INVALID_INDEX || pt->nextPoint == next_pt) {
+                                                            pt->nextPoint = next_pt;
+                                                        }
+                                                    } else if (pt->nextPoint == next_pt) {
+                                                        /* Already matches, no change needed */
+                                                    }
+                                                }
+                                                
+                                                fprintf(stdout, "Created face with %d points (polygon index %d)\n", 
+                                                        valid_count, poly_idx);
+                                                
+                                                /* Clear selection after creating face */
+                                                CadCore_ClearSelection(g->cad);
+                                            } else {
+                                                fprintf(stderr, "Failed to create polygon (no free slots)\n");
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        /* Normal point select tool - find all points at the same location (handles merged points) */
+                        int16_t point_indices[64]; /* Max 64 points at same location */
+                        int point_count = CadView_FindPointsAtLocation(
+                            &g->views[i], g->cad,
+                            in->mouse_x, in->mouse_y,
+                            viewport_x, viewport_y,
+                            viewport_w, viewport_h,
+                            10, /* 10 pixel screen threshold */
+                            0.01, /* 0.01 unit world threshold for merged points */
+                            point_indices, 64
+                        );
+                        
+                        if (point_count > 0) {
+                            /* Normal point select tool behavior */
+                            /* Check if all found points are already selected */
+                            int all_selected = 1;
+                            for (int j = 0; j < point_count; j++) {
+                                if (!CadCore_IsPointSelected(g->cad, point_indices[j])) {
+                                    all_selected = 0;
+                                    break;
+                                }
+                            }
+                            
+                            if (all_selected) {
+                                /* Deselect all points at this location */
+                                for (int j = 0; j < point_count; j++) {
+                                    CadCore_DeselectPoint(g->cad, point_indices[j]);
+                                }
+                                fprintf(stdout, "Deselected %d point(s) at location\n", point_count);
+                            } else {
+                                /* Select all points at this location */
+                                for (int j = 0; j < point_count; j++) {
+                                    CadCore_SelectPoint(g->cad, point_indices[j]);
+                                }
+                                fprintf(stdout, "Selected %d point(s) at location\n", point_count);
+                            }
+                        }
+                    }
+                } else if (g->selected_tool == 2) {
+                    /* Point tool (tool 2) - add a new point at clicked location */
+                    /* Convert screen coordinates to viewport-relative coordinates */
+                    int vp_x = in->mouse_x - content.x;
+                    int vp_y = in->mouse_y - content.y;
+                    
+                    /* Convert screen coordinates to world coordinates */
+                    double world_x, world_y, world_z;
+                    CadView_UnprojectPoint(
+                        &g->views[i],
+                        vp_x, vp_y,
+                        content.w, content.h,
+                        &world_x, &world_y, &world_z
                     );
                     
-                    if (point_count > 0) {
-                        /* Check if all found points are already selected */
-                        int all_selected = 1;
-                        for (int j = 0; j < point_count; j++) {
-                            if (!CadCore_IsPointSelected(g->cad, point_indices[j])) {
-                                all_selected = 0;
-                                break;
-                            }
-                        }
-                        
-                        if (all_selected) {
-                            /* Deselect all points at this location */
-                            for (int j = 0; j < point_count; j++) {
-                                CadCore_DeselectPoint(g->cad, point_indices[j]);
-                            }
-                            fprintf(stdout, "Deselected %d point(s) at location\n", point_count);
-                        } else {
-                            /* Select all points at this location */
-                            for (int j = 0; j < point_count; j++) {
-                                CadCore_SelectPoint(g->cad, point_indices[j]);
-                            }
-                            fprintf(stdout, "Selected %d point(s) at location\n", point_count);
-                        }
+                    /* Add the point */
+                    int16_t new_point_idx = CadCore_AddPoint(g->cad, world_x, world_y, world_z);
+                    if (new_point_idx != INVALID_INDEX) {
+                        /* Select the newly added point */
+                        CadCore_SelectPoint(g->cad, new_point_idx);
+                        fprintf(stdout, "Added point at (%.2f, %.2f, %.2f), index %d\n", 
+                                world_x, world_y, world_z, new_point_idx);
+                    } else {
+                        fprintf(stderr, "Failed to add point (no free slots)\n");
                     }
                 } else if (g->selected_tool == 6 && g->cad->selection.pointCount > 0) {
                     /* Point move tool (tool 6) - start moving selected points */
@@ -1073,6 +1331,15 @@ void gui_update(GuiState* g, const GuiInput* in, int win_w, int win_h) {
                         /* Point select tool */
                         CadCore_SetEditMode(g->cad, CAD_MODE_SELECT_POINT);
                         fprintf(stdout, "Point select tool activated\n");
+                    } else if (g->selected_tool == 2) {
+                        /* Point tool (add point) */
+                        CadCore_SetEditMode(g->cad, CAD_MODE_EDIT_POINT);
+                        fprintf(stdout, "Point tool activated\n");
+                    } else if (g->selected_tool == 3) {
+                        /* Make tool - clear selection and allow selecting 2-12 points */
+                        CadCore_ClearSelection(g->cad);
+                        CadCore_SetEditMode(g->cad, CAD_MODE_SELECT_POINT);
+                        fprintf(stdout, "Make tool activated - left-click to add points, right-click to finalize face (2-12 points)\n");
                     } else if (g->selected_tool == 6) {
                         /* Point move tool */
                         CadCore_SetEditMode(g->cad, CAD_MODE_EDIT_POINT);
@@ -1519,12 +1786,150 @@ void gui_draw(GuiState* g, const GuiInput* in, int win_w, int win_h, int fb_w, i
         font_draw(g->font, cinner.x + 8, cinner.y + 6, coord_str, 0);
     }
     
-    /* Draw animation window content (empty for now) */
+    /* Draw animation window content */
     if (g->animationWindow.r.w > 0 && g->animationWindow.r.h > 0) {
         Rect ar = g->animationWindow.r;
         Rect ainner = (Rect){ ar.x + 6, ar.y + 26, ar.w - 12, ar.h - 32 };
         rg_fill_rect(ainner.x, ainner.y, ainner.w, ainner.h, (RG_Color){250,250,250,255});
         rg_stroke_rect(ainner.x, ainner.y, ainner.w, ainner.h, (RG_Color){120,120,120,255});
+        
+        if (g->font) {
+            int y = ainner.y + 8;
+            int x = ainner.x + 8;
+            
+            /* Title: Current Frame No X */
+            char frame_title[64];
+            snprintf(frame_title, sizeof(frame_title), "Current Frame No %d", g->anim_current_frame);
+            font_draw(g->font, x, y, frame_title, 0);
+            y += 25;
+            
+            /* Playback controls row - using icons from bitmap.c */
+            int icon_spacing = 5;
+            int start_x = x;
+            
+            /* First Frame button (icon 0: beframe_bits, 24x48) */
+            if (g->anim_icons[0]) {
+                rg_draw_texture(g->anim_icons[0], start_x, y, 24, 48);
+            }
+            start_x += 24 + icon_spacing;
+            
+            /* Fast Rewind button (icon 2: beforeframe_bits, 24x48) */
+            if (g->anim_icons[2]) {
+                rg_draw_texture(g->anim_icons[2], start_x, y, 24, 48);
+            }
+            start_x += 24 + icon_spacing;
+            
+            /* Previous Frame button (icon 2 again, or we can use beforeframe) */
+            if (g->anim_icons[2]) {
+                rg_draw_texture(g->anim_icons[2], start_x, y, 24, 48);
+            }
+            start_x += 24 + icon_spacing;
+            
+            /* Play/GO button (icon 3: goframe_bits, 30x48) */
+            if (g->anim_icons[3]) {
+                RG_Color play_bg = g->anim_playing ? (RG_Color){180,255,180,255} : (RG_Color){220,220,220,255};
+                rg_fill_rect(start_x - 2, y - 2, 34, 52, play_bg);
+                rg_draw_texture(g->anim_icons[3], start_x, y, 30, 48);
+            }
+            start_x += 30 + icon_spacing;
+            
+            /* Next Frame button (icon 4: nextframe_bits, 24x48) */
+            if (g->anim_icons[4]) {
+                rg_draw_texture(g->anim_icons[4], start_x, y, 24, 48);
+            }
+            start_x += 24 + icon_spacing;
+            
+            /* Fast Forward button (icon 5: nexframe_bits, 24x48) */
+            if (g->anim_icons[5]) {
+                rg_draw_texture(g->anim_icons[5], start_x, y, 24, 48);
+            }
+            start_x += 24 + icon_spacing;
+            
+            /* Last Frame button (icon 1: topfram_bits, 24x48) */
+            if (g->anim_icons[1]) {
+                rg_draw_texture(g->anim_icons[1], start_x, y, 24, 48);
+            }
+            
+            y += 48 + 15;
+            
+            /* Right side: Frame counter, Loop button, and Action buttons */
+            int right_x = ainner.x + ainner.w - 120;
+            int right_y = ainner.y + 8;
+            
+            /* Frame counter */
+            char frame_count[32];
+            snprintf(frame_count, sizeof(frame_count), "%d", g->anim_total_frames);
+            font_draw(g->font, right_x, right_y, frame_count, 0);
+            right_y += 25;
+            
+            /* Loop button (icon 11: toguru_bits, 48x24) */
+            if (g->anim_icons[11]) {
+                RG_Color loop_bg = g->anim_loop ? (RG_Color){180,255,180,255} : (RG_Color){220,220,220,255};
+                rg_fill_rect(right_x - 2, right_y - 2, 52, 28, loop_bg);
+                rg_draw_texture(g->anim_icons[11], right_x, right_y, 48, 24);
+            }
+            right_y += 30;
+            
+            /* Action buttons column - using icons */
+            int action_icon_y = right_y;
+            
+            /* Add button (icon 8: plus_bits, 30x30) */
+            if (g->anim_icons[8]) {
+                rg_fill_rect(right_x - 2, action_icon_y - 2, 34, 34, (RG_Color){220,220,220,255});
+                rg_stroke_rect(right_x - 2, action_icon_y - 2, 34, 34, (RG_Color){0,0,0,255});
+                rg_draw_texture(g->anim_icons[8], right_x, action_icon_y, 30, 30);
+                if (g->font) font_draw(g->font, right_x + 35, action_icon_y + 8, "Add", 0);
+            }
+            action_icon_y += 35;
+            
+            /* Delete button (icon 9: minus_bits, 30x30) */
+            if (g->anim_icons[9]) {
+                rg_fill_rect(right_x - 2, action_icon_y - 2, 34, 34, (RG_Color){220,220,220,255});
+                rg_stroke_rect(right_x - 2, action_icon_y - 2, 34, 34, (RG_Color){0,0,0,255});
+                rg_draw_texture(g->anim_icons[9], right_x, action_icon_y, 30, 30);
+                if (g->font) font_draw(g->font, right_x + 35, action_icon_y + 8, "delete", 0);
+            }
+            action_icon_y += 35;
+            
+            /* Copy button (icon 10: copy_bits, 30x30) */
+            if (g->anim_icons[10]) {
+                rg_fill_rect(right_x - 2, action_icon_y - 2, 34, 34, (RG_Color){220,220,220,255});
+                rg_stroke_rect(right_x - 2, action_icon_y - 2, 34, 34, (RG_Color){0,0,0,255});
+                rg_draw_texture(g->anim_icons[10], right_x, action_icon_y, 30, 30);
+                if (g->font) font_draw(g->font, right_x + 35, action_icon_y + 8, "AllCopy", 0);
+            }
+            action_icon_y += 35;
+            
+            if (g->font) {
+                font_draw(g->font, right_x, action_icon_y, "AllMove", 0);
+                action_icon_y += 20;
+                font_draw(g->font, right_x, action_icon_y, "PartCopy", 0);
+            }
+            
+            /* Timeline scrubber at bottom */
+            int timeline_y = ainner.y + ainner.h - 30;
+            int timeline_h = 20;
+            Rect timeline = (Rect){ ainner.x + 8, timeline_y, ainner.w - 16, timeline_h };
+            rg_fill_rect(timeline.x, timeline.y, timeline.w, timeline.h, (RG_Color){240,240,240,255});
+            rg_stroke_rect(timeline.x, timeline.y, timeline.w, timeline.h, (RG_Color){0,0,0,255});
+            
+            /* Timeline slider */
+            if (g->anim_total_frames > 0) {
+                int slider_w = 10;
+                int slider_x = timeline.x + (int)((float)timeline.w * (float)g->anim_current_frame / (float)(g->anim_total_frames > 0 ? g->anim_total_frames : 1));
+                if (slider_x + slider_w > timeline.x + timeline.w) slider_x = timeline.x + timeline.w - slider_w;
+                Rect slider = (Rect){ slider_x, timeline.y + 2, slider_w, timeline_h - 4 };
+                rg_fill_rect(slider.x, slider.y, slider.w, slider.h, (RG_Color){100,100,100,255});
+            }
+            
+            /* End button at bottom right */
+            if (g->font) {
+                Rect btn_end = (Rect){ ainner.x + ainner.w - 60, timeline_y, 50, timeline_h };
+                rg_fill_rect(btn_end.x, btn_end.y, btn_end.w, btn_end.h, (RG_Color){220,220,220,255});
+                rg_stroke_rect(btn_end.x, btn_end.y, btn_end.w, btn_end.h, (RG_Color){0,0,0,255});
+                font_draw(g->font, btn_end.x + 12, btn_end.y + 6, "end", 0);
+            }
+        }
     }
     
     /* Step 4: Draw dropdown menu last (on top of everything) */
