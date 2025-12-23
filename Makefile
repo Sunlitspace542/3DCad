@@ -1,5 +1,4 @@
-# Makefile for 3DCad (build with GCC under MSYS / MinGW)
-# Usage: `make` or `make PLATFORM=win32`
+# Makefile for 3DCad
 
 PLATFORM ?= x64
 ifeq ($(PLATFORM),x64)
@@ -11,6 +10,8 @@ endif
 CC = gcc
 CFLAGS = -std=c11 -O2 -Wall -Iinclude
 LDFLAGS = -L$(LIBDIR)
+# GLFW needs to be linked with GDI32 on MSYS2
+# Passing --static so MSYS2 DLLs don't need to be included with the binary
 LIBS = -lglfw3 -lopengl32 -lcomdlg32 -lgdi32 --static
 
 SRCS = $(wildcard src/*.c)
@@ -44,4 +45,3 @@ distclean: clean
 run: all
 	./$(TARGET)
 
-# End of Makefile
