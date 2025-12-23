@@ -140,7 +140,7 @@ int CadCore_IsPointValid(CadCore* core, int16_t index) {
    ---------------------------------------------------------------------------- */
 
 int16_t CadCore_AddPolygon(CadCore* core, int16_t firstPoint, uint8_t color, uint8_t npoints) {
-    if (!core || !CadCore_IsPointValid(core, firstPoint) || npoints < 3) {
+    if (!core || !CadCore_IsPointValid(core, firstPoint) || npoints < 2) {
         return INVALID_INDEX;
     }
     
@@ -454,7 +454,7 @@ int CadCore_ValidatePolygon(CadCore* core, int16_t polygonIndex) {
     CadPolygon* poly = &core->data.polygons[polygonIndex];
     
     /* Check minimum vertex count */
-    if (poly->npoints < 3) return 0;
+    if (poly->npoints < 2) return 0;
     
     /* Verify all points in chain are valid */
     int16_t current = poly->firstPoint;
@@ -691,5 +691,50 @@ int CadCore_IsFullyMerged(CadCore* core) {
     if (!core) return 0;
     
     return CadCore_AreCoordinatesMerged(core) && CadCore_ArePointsMerged(core);
+}
+
+/* ----------------------------------------------------------------------------
+   Check if a point is connected to any polygon
+   ---------------------------------------------------------------------------- */
+int CadCore_IsPointConnected(CadCore* core, int16_t pointIndex) {
+    if (!core || pointIndex < 0 || pointIndex >= CAD_MAX_POINTS) return 0;
+    if (!CadCore_IsPointValid(core, pointIndex)) return 0;
+    
+    /* Check all polygons to see if this point is used */
+    for (int i = 0; i < core->data.polygonCount; i++) {
+        CadPolygon* poly = CadCore_GetPolygon(core, i);
+        if (!poly || poly->flags == 0) continue;
+        if (poly->npoints < 2) continue;
+        
+        /* Traverse the polygon's point linked list */
+        int16_t current = poly->firstPoint;
+        int visited_count = 0;
+        int16_t visited[64]; /* Cycle detection */
+        
+        while (current >= 0 && current < CAD_MAX_POINTS && visited_count < 64) {
+            /* Check for cycles */
+            int already_visited = 0;
+            for (int v = 0; v < visited_count; v++) {
+                if (visited[v] == current) {
+                    already_visited = 1;
+                    break;
+                }
+            }
+            if (already_visited) break;
+            visited[visited_count++] = current;
+            
+            /* If this point matches, it's connected */
+            if (current == pointIndex) {
+                return 1;
+            }
+            
+            CadPoint* pt = CadCore_GetPoint(core, current);
+            if (!pt || pt->flags == 0) break;
+            
+            current = pt->nextPoint;
+        }
+    }
+    
+    return 0; /* Not found in any polygon */
 }
 

@@ -209,7 +209,7 @@ void CadView_Render(const CadView* view, const CadCore* core,
 
             int16_t point_idx = poly->firstPoint;
             if (point_idx < 0 || point_idx >= CAD_MAX_POINTS) continue;
-            if (poly->npoints < 3) continue;
+            if (poly->npoints < 2) continue;
 
             #define MAX_STACK_POINTS 64
             int stack_x[MAX_STACK_POINTS];
@@ -277,20 +277,32 @@ void CadView_Render(const CadView* view, const CadCore* core,
             }
         }
 
-        /* Selected points on top (2D) */
-        for (int i = 0; i < core->selection.pointCount; i++) {
-            int16_t idx = core->selection.selectedPoints[i];
-            if (idx < 0) continue;
-
-            CadPoint* pt = CadCore_GetPoint((CadCore*)core, idx);
-            if (!pt) continue;
-
-            int x, y;
-            CadView_ProjectPoint(view, pt->pointx, pt->pointy, pt->pointz, &x, &y, viewport_w, viewport_h);
-
-            RG_Color red = { 255, 0, 0, 255 };
-            int size = 4;
-            rg_fill_rect(x - size, y - size, size * 2, size * 2, red);
+        /* Render all points: selected = red, orphaned = blue */
+        for (int i = 0; i < core->data.pointCount; i++) {
+            CadPoint* pt = CadCore_GetPoint((CadCore*)core, i);
+            if (!pt || pt->flags == 0) continue;
+            
+            /* Check if point is selected */
+            int is_selected = CadCore_IsPointSelected((CadCore*)core, i);
+            
+            /* Check if point is connected to any polygon */
+            int is_connected = CadCore_IsPointConnected((CadCore*)core, i);
+            
+            /* Only render selected points (red) or orphaned points (blue) */
+            if (is_selected || !is_connected) {
+                int x, y;
+                CadView_ProjectPoint(view, pt->pointx, pt->pointy, pt->pointz, &x, &y, viewport_w, viewport_h);
+                
+                RG_Color color;
+                if (is_selected) {
+                    color = (RG_Color){ 255, 0, 0, 255 }; /* Red for selected */
+                } else {
+                    color = (RG_Color){ 0, 0, 255, 255 }; /* Blue for orphaned */
+                }
+                
+                int size = 4;
+                rg_fill_rect(x - size, y - size, size * 2, size * 2, color);
+            }
         }
 
         return;
@@ -362,7 +374,7 @@ void CadView_Render(const CadView* view, const CadCore* core,
 
         int16_t point_idx = poly->firstPoint;
         if (point_idx < 0 || point_idx >= CAD_MAX_POINTS) continue;
-        if (poly->npoints < 3) continue;
+        if (poly->npoints < 2) continue;
 
         #define MAX_STACK_POINTS 64
         int    stack_x[MAX_STACK_POINTS];
@@ -443,7 +455,20 @@ void CadView_Render(const CadView* view, const CadCore* core,
             if (count > 1000) break;
         }
 
-        if (count >= 3) {
+        if (count == 2) {
+            /* 2-point faces are wireframe edges - render as lines */
+            glDisable(GL_LIGHTING);
+            glColor4ub(edge_color.r, edge_color.g, edge_color.b, edge_color.a);
+            
+            glBegin(GL_LINES);
+            for (int j = 0; j < count; j++) {
+                int gl_y = viewport_h - y_coords[j];
+                glVertex3d((double)x_coords[j] - viewport_w / 2.0,
+                           (double)gl_y - viewport_h / 2.0,
+                           z_coords[j]);
+            }
+            glEnd();
+        } else if (count >= 3) {
             /* Compute normal in the SAME space as the vertices we draw (fixes �weird shading�) */
             double nx = 0.0, ny = 0.0, nz = 1.0;
             {
@@ -529,20 +554,33 @@ void CadView_Render(const CadView* view, const CadCore* core,
     glPushMatrix();
     glLoadIdentity();
 
-    for (int i = 0; i < core->selection.pointCount; i++) {
-        int16_t idx = core->selection.selectedPoints[i];
-        if (idx < 0) continue;
-
-        CadPoint* pt = CadCore_GetPoint((CadCore*)core, idx);
-        if (!pt) continue;
-
-        int x, y;
-        CadView_ProjectPoint(view, pt->pointx, pt->pointy, pt->pointz, &x, &y, viewport_w, viewport_h);
-
-        RG_Color red = { 255, 0, 0, 255 };
-        int size = 4;
-        /* Draw red square at projected point location */
-        rg_fill_rect(x - size, y - size, size * 2, size * 2, red);
+    /* Render all points: selected = red, orphaned = blue */
+    for (int i = 0; i < core->data.pointCount; i++) {
+        CadPoint* pt = CadCore_GetPoint((CadCore*)core, i);
+        if (!pt || pt->flags == 0) continue;
+        
+        /* Check if point is selected */
+        int is_selected = CadCore_IsPointSelected((CadCore*)core, i);
+        
+        /* Check if point is connected to any polygon */
+        int is_connected = CadCore_IsPointConnected((CadCore*)core, i);
+        
+        /* Only render selected points (red) or orphaned points (blue) */
+        if (is_selected || !is_connected) {
+            int x, y;
+            CadView_ProjectPoint(view, pt->pointx, pt->pointy, pt->pointz, &x, &y, viewport_w, viewport_h);
+            
+            RG_Color color;
+            if (is_selected) {
+                color = (RG_Color){ 255, 0, 0, 255 }; /* Red for selected */
+            } else {
+                color = (RG_Color){ 0, 0, 255, 255 }; /* Blue for orphaned */
+            }
+            
+            int size = 4;
+            /* Draw square at projected point location */
+            rg_fill_rect(x - size, y - size, size * 2, size * 2, color);
+        }
     }
 
     /* Restore matrices */
