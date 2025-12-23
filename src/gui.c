@@ -730,7 +730,7 @@ void gui_load_anim_icons(GuiState* g, const char* resource_path) {
     
     /* Animation icon filenames in order (matching animIcons array from bitmap.c) */
     const char* anim_names[12] = {
-        "beframe_bits_48x24.png",      /* 0: First frame (24x48 in code, but file is 48x24) */
+        "beframe_bits_24x48.png",      /* 0: First frame */
         "topfram_bits_24x48.png",      /* 1: Last frame */
         "beforeframe_bits_24x48.png",  /* 2: Previous frame */
         "goframe_bits_32x48.png",      /* 3: GO/Play button (30x48 in code) */
