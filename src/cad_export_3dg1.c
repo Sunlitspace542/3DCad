@@ -74,6 +74,26 @@ int CadExport_3DG1(const CadCore* core, const char* filename) {
         }
     }
     
+    /* Step 3: Collect unique colors */
+    int color_count = 0;
+    int color_map[256]; /* Maps color index to material index */
+    
+    /* Initialize color map */
+    for (int i = 0; i < 256; i++) {
+        color_map[i] = -1;
+    }
+    
+    /* Find all unique colors used in polygons */
+    for (int i = 0; i < core->data.polygonCount && i < CAD_MAX_POLYGONS; i++) {
+        const CadPolygon* poly = &core->data.polygons[i];
+        if (poly->flags == 0 || poly->npoints < 3) continue;
+        
+        uint8_t color_idx = poly->color;
+        if (color_map[color_idx] == -1) {
+            color_map[color_idx] = color_count;
+        }
+    }
+    
     /* Step 2: Write all faces (polygons) with material assignments */
     uint8_t current_material = 255; /* Invalid, will force first material to be set */
     
@@ -119,6 +139,8 @@ int CadExport_3DG1(const CadCore* core, const char* filename) {
     }
     fprintf(fp_obj, "\x1a"); // End-of-File marker
     fclose(fp_obj);
+    fprintf(stdout, "Exported 3DG1 file: %s (%d vertices, %d faces, %d materials)\n", 
+            filename, vertex_count, core->data.polygonCount, color_count);
     return 1;
 }
 
