@@ -7,6 +7,7 @@
 #include "file_dialog.h"
 #include "cad_view.h"
 #include "cad_export_obj.h"
+#include "cad_export_3dg1.h"
 #include <math.h>
 
 #ifndef M_PI
@@ -130,10 +131,11 @@ static const char* fileMenuItems[] = {
     "(S)Save",
     " Save As...",
     " Import",
-    " Export",
+    " Export to OBJ",
+    " Export to 3DG1",
     "-",
     " Load Color...",
-    " Load Pallet...",
+    " Load Palette...",
     " Animation",
     "-",
     "(Q)Quit",
@@ -299,7 +301,7 @@ static void handle_file_menu_action(GuiState* g, int item_index) {
     case 5: /* Import */
         fprintf(stdout, "Import (not implemented)\n");
         break;
-    case 6: /* Export */
+    case 6: /* Export to OBJ */
         {
             char filename[260];
             if (FileDialog_Save(filename, sizeof(filename), 
@@ -313,13 +315,27 @@ static void handle_file_menu_action(GuiState* g, int item_index) {
             }
         }
         break;
-    case 8: /* Load Color... */
+    case 7: /* Export to 3DG1 */
+        {
+            char filename[260];
+            if (FileDialog_Save(filename, sizeof(filename), 
+                              "TXT Files\0*.txt\0All Files\0*.*\0", 
+                              "Export 3DG1")) {
+                if (CadExport_3DG1(g->cad, filename)) {
+                    fprintf(stdout, "Exported to: %s\n", filename);
+                } else {
+                    fprintf(stderr, "Error: Failed to export 3DG1 file\n");
+                }
+            }
+        }
+        break;
+    case 9: /* Load Color... */
         fprintf(stdout, "Load Color (not implemented)\n");
         break;
-    case 9: /* Load Pallet... */
+    case 10: /* Load Pallet... */
         fprintf(stdout, "Load Palette (not implemented)\n");
         break;
-    case 10: /* Animation */
+    case 11: /* Animation */
         /* Toggle animation window visibility */
         if (g->animationWindow.r.w == 0 || g->animationWindow.r.h == 0) {
             /* Show window */
@@ -332,7 +348,7 @@ static void handle_file_menu_action(GuiState* g, int item_index) {
             fprintf(stdout, "Animation window closed\n");
         }
         break;
-    case 12: /* (Q)Quit */
+    case 13: /* (Q)Quit */
         fprintf(stdout, "Quit (application exit not handled here)\n");
         break;
     }
