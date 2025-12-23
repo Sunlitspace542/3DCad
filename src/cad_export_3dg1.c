@@ -75,6 +75,7 @@ int CadExport_3DG1(const CadCore* core, const char* filename) {
     }
     
     /* Step 3: Collect unique colors */
+    uint8_t used_colors[256]; // never used again for 3DG1 but this is needed to compute the total at the end
     int color_count = 0;
     int color_map[256]; /* Maps color index to material index */
     
@@ -86,20 +87,21 @@ int CadExport_3DG1(const CadCore* core, const char* filename) {
     /* Find all unique colors used in polygons */
     for (int i = 0; i < core->data.polygonCount && i < CAD_MAX_POLYGONS; i++) {
         const CadPolygon* poly = &core->data.polygons[i];
-        if (poly->flags == 0 || poly->npoints < 3) continue;
+        if (poly->flags == 0 || poly->npoints < CAD_MIN_FACE_POINTS) continue; // Star Fox allows faces with at least 2 points (colored lines) 
         
         uint8_t color_idx = poly->color;
         if (color_map[color_idx] == -1) {
             color_map[color_idx] = color_count;
+            used_colors[color_count++] = color_idx;
         }
     }
     
-    /* Step 2: Write all faces (polygons) with material assignments */
+    /* Step 4: Write all faces (polygons) with material assignments */
     uint8_t current_material = 255; /* Invalid, will force first material to be set */
     
     for (int i = 0; i < core->data.polygonCount && i < CAD_MAX_POLYGONS; i++) {
         const CadPolygon* poly = &core->data.polygons[i];
-        if (poly->flags == 0 || poly->npoints < 2) continue; // Star Fox allows faces with at least 2 points (colored lines) 
+        if (poly->flags == 0 || poly->npoints < CAD_MIN_FACE_POINTS) continue; // Star Fox allows faces with at least 2 points (colored lines) 
         
         /* Set material if it changed */
         if (poly->color != current_material) {
@@ -126,8 +128,8 @@ int CadExport_3DG1(const CadCore* core, const char* filename) {
         }
         
         /* Write face if we have at least 2 vertices */
-        /* number_of_points point_index_1 ... point_index_n color_index */
-        if (point_count >= 2) { // Star Fox allows faces with at least 2 points (colored lines)
+        /* number_of_points point_index_0 ... point_index_n color_index */
+        if (point_count >= CAD_MIN_FACE_POINTS) { // Star Fox allows faces with at least 2 points (colored lines)
             fprintf(fp_obj, "%d", point_count); // Fundoshi-Kun needs number of points at start of face entry
             for (int j = 0; j < point_count; j++) {
                 int point_idx = (point_indices[j] - 1);  // Fundoshi-Kun point references are 0-indexed
